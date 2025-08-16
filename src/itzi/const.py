@@ -64,7 +64,7 @@ class TemporalType(StrEnum):
     ABSOLUTE = "absolute"
 
 
-class InfiltrationModel(StrEnum):
+class InfiltrationModelType(StrEnum):
     NULL = "null"
     CONSTANT = "constant"
     GREEN_AMPT = "green-ampt"
