@@ -51,6 +51,7 @@ if TYPE_CHECKING:
     from itzi.providers.grass_interface import GrassInterface
     from itzi.simulation import Simulation
 
+<<<<<<< HEAD
 
 def main(argv=None):
     """argv: alternative CLI arguments, used for testing (default to sys.argv)"""
@@ -63,6 +64,23 @@ def main(argv=None):
 
     # args.command is the name of the subcommand
     command_mapper[args.command](args)
+=======
+def main():
+    # default functions for subparsers
+    parser.run_parser.set_defaults(func=itzi_run)
+    parser.version_parser.set_defaults(func=itzi_version)
+    # Cloud subparsers
+    parser.cloud_login_parser.set_defaults(func=itzi_cloud_login)
+    parser.cloud_push_parser.set_defaults(func=itzi_cloud_push)
+    parser.cloud_status_parser.set_defaults(func=itzi_cloud_status)
+    parser.cloud_pull_parser.set_defaults(func=itzi_cloud_pull)
+    # get parsed arguments
+    args = parser.arg_parser.parse_args()
+    try:
+        args.func(args)
+    except AttributeError:
+        parser.arg_parser.print_usage()
+>>>>>>> db309aa (add parser for cloud functions)
 
 
 class SimulationRunner:
@@ -353,6 +371,28 @@ def itzi_run(cli_args):
 def itzi_version(cli_args):
     """Display the software version number from the installed version"""
     print(version("itzi"))
+
+
+def itzi_cloud_login(cli_args):
+    print(cli_args)
+
+
+def itzi_cloud_push(cli_args):
+    """Pack the input data, then submit a request to the cloud compute provider."""
+    from itzi import cloud
+
+    # Hash request with blake2b and 8 bytes digest
+    for conf_file in cli_args.config_file:
+        sim_config = ConfigReader(conf_file).get_sim_params()
+        cloud.pack_input(sim_config)
+
+
+def itzi_cloud_status(cli_args):
+    print(cli_args)
+
+
+def itzi_cloud_pull(cli_args):
+    print(cli_args)
 
 
 if __name__ == "__main__":

@@ -8,6 +8,7 @@ import argparse
 DESCR = "A dynamic, fully distributed hydraulic and hydrologic model."
 
 
+<<<<<<< HEAD
 def parse_resume_from(arg_value: str) -> tuple[str | None, str]:
     if "=" not in arg_value:
         return None, arg_value
@@ -24,7 +25,7 @@ def build_parser() -> argparse.ArgumentParser:
     arg_parser = argparse.ArgumentParser(description=DESCR)
     subparsers = arg_parser.add_subparsers(dest="command", required=True)
 
-    # run a simulation
+    # run a simulation locally
     run_parser = subparsers.add_parser("run", help="Run a simulation.")
     run_parser.add_argument(
         "config_file",
@@ -50,5 +51,29 @@ def build_parser() -> argparse.ArgumentParser:
 
     # display version
     subparsers.add_parser("version", help="Display software version number.")
+
+
+    # Cloud functions subparser
+    cloud_parser = subparsers.add_parser("cloud", help="Run and manage cloud simulations.")
+    cloud_subparser = cloud_parser.add_subparsers()
+
+    cloud_login_parser = cloud_subparser.add_parser("login", help="Log in to the cloud provider.")
+
+    cloud_push_parser = cloud_subparser.add_parser(
+        "push", help="submit a simulation to run in the cloud"
+    )
+    cloud_push_parser.add_argument(
+        "config_file",
+        nargs="+",
+        help=("An Itzï configuration file (if several given, run in batch mode.)"),
+    )
+
+    cloud_status_parser = cloud_subparser.add_parser(
+        "status", help="Display status of submitted cloud simulations."
+    )
+
+    cloud_pull_parser = cloud_subparser.add_parser(
+        "pull", help="Pull results from a complete cloud simulation."
+    )
 
     return arg_parser
