@@ -8,7 +8,6 @@ import argparse
 DESCR = "A dynamic, fully distributed hydraulic and hydrologic model."
 
 
-<<<<<<< HEAD
 def parse_resume_from(arg_value: str) -> tuple[str | None, str]:
     if "=" not in arg_value:
         return None, arg_value
@@ -55,7 +54,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # Cloud functions subparser
     cloud_parser = subparsers.add_parser("cloud", help="Run and manage cloud simulations.")
-    cloud_subparser = cloud_parser.add_subparsers()
+    cloud_subparser = cloud_parser.add_subparsers(dest="cloud_command", required=True)
 
     cloud_login_parser = cloud_subparser.add_parser("login", help="Log in to the cloud provider.")
 

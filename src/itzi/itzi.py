@@ -51,7 +51,6 @@ if TYPE_CHECKING:
     from itzi.providers.grass_interface import GrassInterface
     from itzi.simulation import Simulation
 
-<<<<<<< HEAD
 
 def main(argv=None):
     """argv: alternative CLI arguments, used for testing (default to sys.argv)"""
@@ -62,25 +61,18 @@ def main(argv=None):
         "version": itzi_version,
     }
 
-    # args.command is the name of the subcommand
+    cloud_command_mapper: dict[str, Callable] = {
+        "login": itzi_cloud_login,
+        "push": itzi_cloud_push,
+        "status": itzi_cloud_status,
+        "pull": itzi_cloud_pull,
+    }
+
+    if args.command == "cloud":
+        cloud_command_mapper[args.command](args)    
+        return
+
     command_mapper[args.command](args)
-=======
-def main():
-    # default functions for subparsers
-    parser.run_parser.set_defaults(func=itzi_run)
-    parser.version_parser.set_defaults(func=itzi_version)
-    # Cloud subparsers
-    parser.cloud_login_parser.set_defaults(func=itzi_cloud_login)
-    parser.cloud_push_parser.set_defaults(func=itzi_cloud_push)
-    parser.cloud_status_parser.set_defaults(func=itzi_cloud_status)
-    parser.cloud_pull_parser.set_defaults(func=itzi_cloud_pull)
-    # get parsed arguments
-    args = parser.arg_parser.parse_args()
-    try:
-        args.func(args)
-    except AttributeError:
-        parser.arg_parser.print_usage()
->>>>>>> db309aa (add parser for cloud functions)
 
 
 class SimulationRunner:
