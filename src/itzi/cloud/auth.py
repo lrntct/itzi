@@ -44,8 +44,12 @@ def login(url: str, email: str, password: str) -> None:
                 f"Authentiction failed. Code: {response.status_code}. Reason: {response.reason}"
             )
     session_token = resp_dict["meta"]["session_token"]
-    keyring.set_password("itzi_cloud", email, session_token)
+    set_token(email, session_token)
     msgr.message(f"{email} successfully logged in.")
+
+
+def set_token(email: str, session_token: str):
+    keyring.set_password("itzi_cloud", email, session_token)
 
 
 def get_token(email: str) -> None | str:
@@ -60,9 +64,25 @@ def logout(url: str, email: str) -> None:
     with requests.Session() as session:
         response = session.delete(url, headers=headers)
     if response.status_code == 401:
-        msgr.message(f"{email} successfuly logged out.")
+        msgr.message(f"{email} successfully logged out.")
     # Delete token
     try:
         keyring.delete_password("itzi_cloud", email)
     except keyring.errors.PasswordDeleteError:
         pass  # Already deleted or never existed
+
+
+def status(url: str, email: str) -> None:
+    """Get authentication status."""
+    headers = {"X-Session-Token": get_token(email)}
+    with requests.Session() as session:
+        response = session.get(url, headers=headers)
+    resp_dict = json.loads(response.text)
+
+    if response.status_code != 200:
+        msgr.message(f"{email} NOT authenticated.")
+        return
+
+    is_authenticated = resp_dict["meta"]["is_authenticated"]
+    if is_authenticated:
+        msgr.message(f"{email} successfully authenticated.")

@@ -366,19 +366,24 @@ def itzi_version(cli_args):
 
 
 def itzi_cloud_login(cli_args):
-    from itzi.cloud.auth import login, logout
+    from itzi.cloud.auth import login, logout, status
     import getpass
+
+    LOGIN_ENDPOINT = "http://127.0.0.1:8000//_allauth/app/v1/auth/login"
+    SESSION_ENDPOINT = "http://127.0.0.1:8000//_allauth/app/v1/auth/session"
 
     email = cli_args.email if cli_args.email else input("Email: ")
 
+    if cli_args.s:
+        # Check status
+        status(SESSION_ENDPOINT, email=email)
+        return
+
     if cli_args.o:
         # log out
-        LOGOUT_ENDPOINT = "http://127.0.0.1:8000//_allauth/app/v1/auth/session"
-        logout(LOGOUT_ENDPOINT, email=email)
-
+        logout(SESSION_ENDPOINT, email=email)
     else:
         # log in
-        LOGIN_ENDPOINT = "http://127.0.0.1:8000//_allauth/app/v1/auth/login"
         password = cli_args.password if cli_args.password else getpass.getpass("Password: ")
         login(LOGIN_ENDPOINT, email=email, password=password)
 
