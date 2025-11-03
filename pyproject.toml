@@ -38,6 +38,7 @@ itzi = "itzi.itzi:main"
 [project.optional-dependencies]
 cloud = [
     "icechunk>=2.0.6",
+    "keyring>=25.7.0",
     "obstore>=0.11.0",
     "pandas>=3.0.3",
     "pyproj>=3.7.2",

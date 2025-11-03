@@ -69,7 +69,7 @@ def main(argv=None):
     }
 
     if args.command == "cloud":
-        cloud_command_mapper[args.command](args)    
+        cloud_command_mapper[args.cloud_command](args)
         return
 
     command_mapper[args.command](args)
@@ -366,7 +366,13 @@ def itzi_version(cli_args):
 
 
 def itzi_cloud_login(cli_args):
-    print(cli_args)
+    from itzi import cloud
+    import getpass
+
+    LOGIN_ENDPOINT = "http://127.0.0.1:8000//_allauth/app/v1/auth/login"
+    email = cli_args.email if cli_args.email else input("Email: ")
+    password = cli_args.password if cli_args.password else getpass.getpass("Password: ")
+    cloud.login(LOGIN_ENDPOINT, email=email, password=password)
 
 
 def itzi_cloud_push(cli_args):

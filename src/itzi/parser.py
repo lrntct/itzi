@@ -51,12 +51,13 @@ def build_parser() -> argparse.ArgumentParser:
     # display version
     subparsers.add_parser("version", help="Display software version number.")
 
-
     # Cloud functions subparser
     cloud_parser = subparsers.add_parser("cloud", help="Run and manage cloud simulations.")
     cloud_subparser = cloud_parser.add_subparsers(dest="cloud_command", required=True)
 
-    cloud_login_parser = cloud_subparser.add_parser("login", help="Log in to the cloud provider.")
+    cloud_login_parser = cloud_subparser.add_parser("login", help="Login to the cloud provider.")
+    cloud_login_parser.add_argument("--email", help="Account email.")
+    cloud_login_parser.add_argument("--password", help="Account password.")
 
     cloud_push_parser = cloud_subparser.add_parser(
         "push", help="submit a simulation to run in the cloud"
