@@ -50,11 +50,17 @@ def login(url: str, email: str, password: str) -> None:
 
 def set_token(email: str, session_token: str):
     keyring.set_password("itzi_cloud", email, session_token)
+    keyring.set_password("itzi_cloud", "default_email", email)
 
 
 def get_token(email: str) -> None | str:
     """Retrieve token."""
     return keyring.get_password("itzi_cloud", email)
+
+
+def get_default_email() -> None | str:
+    """Retrieve default email from the keyring."""
+    return keyring.get_password("itzi_cloud", "default_email")
 
 
 def logout(url: str, email: str) -> None:
@@ -72,7 +78,7 @@ def logout(url: str, email: str) -> None:
         pass  # Already deleted or never existed
 
 
-def status(url: str, email: str) -> None:
+def is_logged(url: str, email: str) -> None:
     """Get authentication status."""
     headers = {"X-Session-Token": get_token(email)}
     with requests.Session() as session:
@@ -80,9 +86,10 @@ def status(url: str, email: str) -> None:
     resp_dict = json.loads(response.text)
 
     if response.status_code != 200:
-        msgr.message(f"{email} NOT authenticated.")
-        return
+        return False
 
     is_authenticated = resp_dict["meta"]["is_authenticated"]
     if is_authenticated:
-        msgr.message(f"{email} successfully authenticated.")
+        return True
+    else:
+        raise ValueError(f"Unconsistent response: {resp_dict}")
