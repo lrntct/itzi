@@ -375,8 +375,10 @@ def itzi_cloud_push(cli_args):
 
     # Hash request with blake2b and 8 bytes digest
     for conf_file in cli_args.config_file:
-        sim_config = ConfigReader(conf_file).get_sim_params()
-        cloud.pack_input(sim_config)
+        msgr.message(f"Packing input data for {conf_file}...")
+        config_reader = ConfigReader(conf_file)
+        cloud.pack_input(config_reader)
+        msgr.debug(f"Done packing input data for {conf_file}.")
 
 
 def itzi_cloud_status(cli_args):

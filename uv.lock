@@ -640,7 +640,7 @@ requires-dist = [
     { name = "pyproj", marker = "extra == 'cloud'", specifier = ">=3.7.2" },
     { name = "pyswmm", specifier = ">=2.1.0" },
     { name = "xarray", extras = ["io", "parallel"], marker = "extra == 'cloud'", specifier = ">=2026.4.0" },
-    { name = "xarray-grass", marker = "extra == 'cloud'", specifier = ">=0.3.0" },
+    { name = "xarray-grass", marker = "extra == 'cloud'", specifier = ">=0.4.0" },
     { name = "zarr", marker = "extra == 'cloud'", specifier = ">=3.2.1" },
 ]
 provides-extras = ["cloud"]
