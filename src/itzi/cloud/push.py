@@ -17,11 +17,10 @@ from typing import TYPE_CHECKING, Dict, Mapping
 from pathlib import Path
 import tempfile
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 
 from itzi.grass_session import GrassSessionManager
 from itzi.const import TemporalType
-import itzi.messenger as msgr
 
 if TYPE_CHECKING:
     from itzi.data_containers import SimulationConfig
@@ -29,8 +28,6 @@ if TYPE_CHECKING:
 
 try:
     import xarray as xr
-    import requests
-    import keyring
 except ImportError:
     raise ImportError(
         "To use the cloud functionalities, install itzi with: "
@@ -113,52 +110,3 @@ def list_input_maps(input_map_names: Mapping) -> Dict[Dict[str : [str, ...]]]:
             categorized[current_mapset] = {"raster": [], "strds": []}
         categorized[current_mapset]["raster"].append(f"MASK@{current_mapset}")
     return categorized
-
-
-def login(url: str, email: str, password: str) -> None:
-    """Log into the cloud service.
-    Store session token into the system keyring.
-    """
-    data = {
-        "email": str(email),
-        "password": str(password),
-    }
-    with requests.Session() as session:
-        response = session.post(url, json=data)
-        if response.status_code == 200:
-            resp_dict = json.loads(response.text)
-        else:
-            msgr.fatal(
-                f"Authentiction failed. Code: {response.status_code}. Reason: {response.reason}"
-            )
-    session_token = resp_dict["meta"]["session_token"]
-    store_token(email, session_token)
-    msgr.message(f"Successfully logged in with account {email}")
-
-
-def store_token(email: str, token: str, expires_in_days: int = 10) -> None:
-    """Store token with expiration timestamp"""
-    expiry = datetime.now(timezone.utc) + timedelta(days=expires_in_days)
-
-    token_data = {"token": token, "expires_at": expiry.isoformat()}
-
-    keyring.set_password("itzi_cloud", email, json.dumps(token_data))
-
-
-def get_valid_token(email: str) -> None | str:
-    """Retrieve token. If expired or non-existent, return None"""
-    stored = keyring.get_password("itzi_cloud", email)
-
-    if not stored:
-        return None
-
-    token_data = json.loads(stored)
-    expiry = datetime.fromisoformat(token_data["expires_at"])
-
-    if datetime.now(timezone.utc) >= expiry:
-        # Token expired, delete it
-        msgr.warning(f"Session for {email} expired, please log again.")
-        keyring.delete_password("itzi_cloud", email)
-        return None
-
-    return token_data["token"]

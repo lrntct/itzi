@@ -366,24 +366,28 @@ def itzi_version(cli_args):
 
 
 def itzi_cloud_login(cli_args):
-    from itzi import cloud
+    from itzi.cloud.auth import login
     import getpass
 
     LOGIN_ENDPOINT = "http://127.0.0.1:8000//_allauth/app/v1/auth/login"
+    # log in
     email = cli_args.email if cli_args.email else input("Email: ")
     password = cli_args.password if cli_args.password else getpass.getpass("Password: ")
-    cloud.login(LOGIN_ENDPOINT, email=email, password=password)
+    login(LOGIN_ENDPOINT, email=email, password=password)
+
+    # log off
+    ...
 
 
 def itzi_cloud_push(cli_args):
     """Pack the input data, then submit a request to the cloud compute provider."""
-    from itzi import cloud
+    from itzi.cloud.push import pack_input
 
     # Hash request with blake2b and 8 bytes digest
     for conf_file in cli_args.config_file:
         msgr.message(f"Packing input data for {conf_file}...")
         config_reader = ConfigReader(conf_file)
-        cloud.pack_input(config_reader)
+        pack_input(config_reader)
         msgr.debug(f"Done packing input data for {conf_file}.")
 
 
