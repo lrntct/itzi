@@ -12,7 +12,6 @@ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 GNU General Public License for more details.
 """
 
-from datetime import datetime, timedelta, timezone
 import json
 
 import itzi.messenger as msgr
@@ -45,33 +44,25 @@ def login(url: str, email: str, password: str) -> None:
                 f"Authentiction failed. Code: {response.status_code}. Reason: {response.reason}"
             )
     session_token = resp_dict["meta"]["session_token"]
-    store_token(email, session_token)
-    msgr.message(f"Successfully logged in with account {email}")
+    keyring.set_password("itzi_cloud", email, session_token)
+    msgr.message(f"{email} successfully logged in.")
 
 
-def store_token(email: str, token: str, expires_in_days: int = 10) -> None:
-    """Store token with expiration timestamp"""
-    expiry = datetime.now(timezone.utc) + timedelta(days=expires_in_days)
-
-    token_data = {"token": token, "expires_at": expiry.isoformat()}
-
-    keyring.set_password("itzi_cloud", email, json.dumps(token_data))
+def get_token(email: str) -> None | str:
+    """Retrieve token."""
+    return keyring.get_password("itzi_cloud", email)
 
 
-def get_valid_token(email: str) -> None | str:
-    """Retrieve token. If expired or non-existent, return None"""
-    stored = keyring.get_password("itzi_cloud", email)
-
-    if not stored:
-        return None
-
-    token_data = json.loads(stored)
-    expiry = datetime.fromisoformat(token_data["expires_at"])
-
-    if datetime.now(timezone.utc) >= expiry:
-        # Token expired, delete it
-        msgr.warning(f"Session for {email} expired, please log again.")
+def logout(url: str, email: str) -> None:
+    """Logout from the service. Clear stored token."""
+    # Log out
+    headers = {"X-Session-Token": get_token(email)}
+    with requests.Session() as session:
+        response = session.delete(url, headers=headers)
+    if response.status_code == 401:
+        msgr.message(f"{email} successfuly logged out.")
+    # Delete token
+    try:
         keyring.delete_password("itzi_cloud", email)
-        return None
-
-    return token_data["token"]
+    except keyring.errors.PasswordDeleteError:
+        pass  # Already deleted or never existed
