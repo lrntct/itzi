@@ -80,13 +80,17 @@ class SurfaceFlowSimulation:
         maxh = np.amax(self.dom.get_array("water_depth"))  # max depth in domain
         min_dim = min(self.dx, self.dy)
         if maxh > 0:
-            dt = self.cfl * (min_dim / (math.sqrt(self.g * maxh)))
+            dt = self.dt_s(self.cfl, min_dim, self.g, maxh)
             self._dt = min(self.dtmax, dt)
         else:
             self._dt = self.dtmax
         if self._dt <= self._dt_fudge:
             raise DtError(f"Tiny computed dt ({self._dt}s)")
         return self
+
+    @staticmethod
+    def dt_s(cfl, min_dim, g, maxh):
+        return cfl * (min_dim / (math.sqrt(g * maxh)))
 
     @property
     def dt(self):

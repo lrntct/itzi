@@ -394,10 +394,13 @@ def itzi_cloud_push(cli_args):
     """Pack the input data, then submit a request to the cloud compute provider."""
     from itzi.cloud.push import create_request
 
+    os.environ["ITZI_VERBOSE"] = str(VerbosityLevel.MESSAGE)
+
     email = check_login()
 
     for conf_file in cli_args.config_file:
-        create_request(email, conf_file)
+        request, input_path = create_request(email, conf_file)
+        print(request)
 
 
 def itzi_cloud_status(cli_args):
