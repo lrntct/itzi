@@ -12,9 +12,12 @@ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 GNU General Public License for more details.
 """
 
+from __future__ import annotations
+from typing import Optional
 import json
 
 import itzi.messenger as msgr
+from itzi.cloud import urls
 
 try:
     import requests
@@ -27,7 +30,7 @@ except ImportError:
     )
 
 
-def login(url: str, email: str, password: str) -> None:
+def login(email: str, password: str, url: str = urls.LOGIN_ENDPOINT) -> None:
     """Log into the cloud service.
     Store session token into the system keyring.
     """
@@ -41,7 +44,7 @@ def login(url: str, email: str, password: str) -> None:
             resp_dict = json.loads(response.text)
         else:
             msgr.fatal(
-                f"Authentiction failed. Code: {response.status_code}. Reason: {response.reason}"
+                f"Authentication failed. Code: {response.status_code}. Reason: {response.reason}"
             )
     session_token = resp_dict["meta"]["session_token"]
     set_token(email, session_token)
@@ -63,7 +66,7 @@ def get_default_email() -> None | str:
     return keyring.get_password("itzi_cloud", "default_email")
 
 
-def logout(url: str, email: str) -> None:
+def logout(email: str, url: str = urls.SESSION_ENDPOINT) -> None:
     """Logout from the service. Clear stored token."""
     # Log out
     headers = {"X-Session-Token": get_token(email)}
@@ -78,7 +81,7 @@ def logout(url: str, email: str) -> None:
         pass  # Already deleted or never existed
 
 
-def is_logged(url: str, email: str) -> None:
+def is_logged(email: str, url: str = urls.SESSION_ENDPOINT) -> bool:
     """Get authentication status."""
     headers = {"X-Session-Token": get_token(email)}
     with requests.Session() as session:
@@ -93,3 +96,17 @@ def is_logged(url: str, email: str) -> None:
         return True
     else:
         raise ValueError(f"Unconsistent response: {resp_dict}")
+
+
+def get_email(email_cli: Optional[str] = None) -> str:
+    """ """
+    default_email = get_default_email()
+
+    if email_cli:
+        email = email_cli
+    elif default_email:
+        email = default_email
+    else:
+        email = input("Email: ")
+
+    return email

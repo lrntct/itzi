@@ -13,14 +13,18 @@ GNU General Public License for more details.
 """
 
 from __future__ import annotations
-from typing import TYPE_CHECKING, Dict, Mapping
+from typing import TYPE_CHECKING, Dict, Mapping, Tuple
 from pathlib import Path
 import tempfile
 import json
-from datetime import timedelta
+import tarfile
+import hashlib
+from datetime import datetime, timedelta, timezone
 
 from itzi.grass_session import GrassSessionManager
+from itzi.configreader import ConfigReader
 from itzi.const import TemporalType
+import itzi.messenger as msgr
 
 if TYPE_CHECKING:
     from itzi.data_containers import SimulationConfig
@@ -36,18 +40,26 @@ except ImportError:
     )
 
 
-def pack_input(config_reader: ConfigReader):
+def pack_input(config_reader: ConfigReader) -> Tuple[Path, str]:
     """Pack all input data into a netcdf file."""
     sim_config: SimulationConfig = config_reader.get_sim_params()
+    sim_config_json = json.dumps(sim_config.as_str_dict())
     grass_params = config_reader.grass_params
     with GrassSessionManager(grass_params):
         cat_dict = list_input_maps(sim_config.input_map_names)
         with tempfile.TemporaryDirectory(prefix="itzi-") as tempdir:
             temp_path = Path(tempdir)
-            ds_to_zarr(cat_dict, grass_params, sim_config, tempdir=temp_path)
+            temp_path_zarr = temp_path / Path("itzi_input.zarr")
+            # Get the zarr
+            ds_to_zarr(cat_dict, grass_params, sim_config, tempdir=temp_path_zarr)
 
-    sim_config_json = json.dumps(sim_config.as_str_dict())
-    print(sim_config_json)
+            # Create tar.gz file in a temp dir
+            temp_dir_path = Path(tempfile.mkdtemp(prefix="itzi-input-"))
+            now = datetime.now(timezone.utc)
+            tar_path = temp_dir_path / Path(f"itzi-input{now}.tgz")
+            with tarfile.open(name=tar_path, mode="x:gz") as tar_file:
+                tar_file.add(temp_path_zarr, arcname="itzi_input.zarr")
+    return tar_path, sim_config_json
 
 
 def ds_to_zarr(
@@ -110,3 +122,29 @@ def list_input_maps(input_map_names: Mapping) -> Dict[Dict[str : [str, ...]]]:
             categorized[current_mapset] = {"raster": [], "strds": []}
         categorized[current_mapset]["raster"].append(f"MASK@{current_mapset}")
     return categorized
+
+
+def create_request(email: str, conf_file_path: str | Path):
+    conf_file_name = Path(conf_file_path).name
+    msgr.message(f"Packing input data for {conf_file_name}...")
+    config_reader = ConfigReader(conf_file_path)
+    tar_path, config_json = pack_input(config_reader)
+    print(tar_path)
+
+    hash_tar = blake2b(tar_path)
+    print(hash_tar)
+    # Unique request identifier (email + datetime + config + input_hash) with blake2b and 8 bytes digest
+    fingerprint_source = f"{email}{datetime.now(timezone.utc)}{config_json}{hash_tar}"
+    request_fingerprint = hashlib.blake2b(
+        fingerprint_source.encode("utf-8"), digest_size=8
+    ).hexdigest()
+    print(request_fingerprint)
+
+
+def blake2b(file_path: str, digest_size: int = 64):
+    """Return the hex digest of a file."""
+    hasher = hashlib.blake2b(digest_size=digest_size)
+    with open(file_path, "rb") as f:
+        for chunk in iter(lambda: f.read(4096), b""):
+            hasher.update(chunk)
+    return hasher.hexdigest()

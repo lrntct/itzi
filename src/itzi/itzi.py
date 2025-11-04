@@ -366,24 +366,14 @@ def itzi_version(cli_args):
 
 
 def itzi_cloud_login(cli_args):
-    from itzi.cloud.auth import login, logout, is_logged, get_default_email
+    from itzi.cloud.auth import login, logout, is_logged, get_email
     import getpass
 
-    LOGIN_ENDPOINT = "http://127.0.0.1:8000//_allauth/app/v1/auth/login"
-    SESSION_ENDPOINT = "http://127.0.0.1:8000//_allauth/app/v1/auth/session"
-
-    default_email = get_default_email()
-
-    if cli_args.email:
-        email = cli_args.email
-    elif default_email:
-        email = default_email
-    else:
-        email = input("Email: ")
+    email = get_email(cli_args.email)
 
     if cli_args.s:
         # Check status
-        if is_logged(SESSION_ENDPOINT, email=email):
+        if is_logged(email=email):
             msgr.message(f"{email} IS authenticated.")
         else:
             msgr.message(f"{email} NOT authenticated.")
@@ -391,33 +381,43 @@ def itzi_cloud_login(cli_args):
 
     if cli_args.o:
         # log out
-        logout(SESSION_ENDPOINT, email=email)
+        logout(email=email)
     else:
         # log in
         password = (
             cli_args.password if cli_args.password else getpass.getpass(f"{email}'s password: ")
         )
-        login(LOGIN_ENDPOINT, email=email, password=password)
+        login(email=email, password=password)
 
 
 def itzi_cloud_push(cli_args):
     """Pack the input data, then submit a request to the cloud compute provider."""
-    from itzi.cloud.push import pack_input
+    from itzi.cloud.push import create_request
 
-    # Hash request with blake2b and 8 bytes digest
+    email = check_login()
+
     for conf_file in cli_args.config_file:
-        msgr.message(f"Packing input data for {conf_file}...")
-        config_reader = ConfigReader(conf_file)
-        pack_input(config_reader)
-        msgr.debug(f"Done packing input data for {conf_file}.")
+        create_request(email, conf_file)
 
 
 def itzi_cloud_status(cli_args):
-    print(cli_args)
+    """List the simulation requested."""
+    check_login()
 
 
 def itzi_cloud_pull(cli_args):
-    print(cli_args)
+    """Retrieve results from the cloud and insert them in the GRASS DB."""
+    check_login()
+
+
+def check_login() -> str | None:
+    from itzi.cloud.auth import get_email, is_logged
+
+    email = get_email()
+    if not is_logged(email):
+        msgr.message("Please log in first.")
+        return
+    return email
 
 
 if __name__ == "__main__":
