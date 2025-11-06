@@ -16,3 +16,4 @@ API_BASE = "http://127.0.0.1:8000"
 
 LOGIN_ENDPOINT = f"{API_BASE}/_allauth/app/v1/auth/login"
 SESSION_ENDPOINT = f"{API_BASE}/_allauth/app/v1/auth/session"
+PUSH_ENDPOINT = f"{API_BASE}/api/itzi_push"

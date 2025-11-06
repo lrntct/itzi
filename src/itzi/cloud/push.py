@@ -21,14 +21,16 @@ import json
 import uuid
 import tarfile
 import hashlib
+import base64
 from datetime import datetime, timedelta, timezone
 
 import numpy as np
+import requests
 
 from itzi.grass_session import GrassSessionManager
 from itzi.configreader import ConfigReader
 from itzi.const import TemporalType, DefaultValues
-import itzi.messenger as msgr
+from itzi.cloud import urls
 
 if TYPE_CHECKING:
     from itzi.data_containers import SimulationConfig
@@ -59,7 +61,7 @@ class InputInfo:
 
     sim_config: SimulationConfig
     dataset_path: Path  # Path to the tgz file containing the zarr of input maps
-    dataset_hash: str  # blake2b hexdigest of the dataset
+    dataset_hash: str  # Base64 MD5 of the dataset
     dataset_bytes: int
     domain_info: DomainInfo
 
@@ -101,7 +103,7 @@ def pack_input(config_reader: ConfigReader) -> InputInfo:
     return InputInfo(
         sim_config=sim_config,
         dataset_path=tar_path,
-        dataset_hash=blake2b(tar_path),
+        dataset_hash=md5_base64(tar_path),
         dataset_bytes=tar_path.stat().st_size,
         domain_info=domain_info,
     )
@@ -172,8 +174,6 @@ def list_input_maps(
 
 def create_request(email: str, conf_file_path: str | Path) -> Tuple[Dict, Path]:
     """"""
-    conf_file_name = Path(conf_file_path).name
-    msgr.message(f"Packing input data for {conf_file_name}...")
     config_reader = ConfigReader(conf_file_path)
     # Pack the input
     input_info = pack_input(config_reader)
@@ -188,14 +188,13 @@ def create_request(email: str, conf_file_path: str | Path) -> Tuple[Dict, Path]:
     ).hexdigest()
 
     # Estimation of Lattice updates
-    estimated_lu = estimate_lattice_update(
+    estimated_ts = estimate_timesteps(
         domain_info=input_info.domain_info, sim_config=input_info.sim_config
     )
 
     request_data = {
-        "email": email,
         "fingerprint": request_fingerprint,
-        "estimated_lattice_updates": estimated_lu,
+        "estimated_timesteps": estimated_ts,
         "sim_config": input_info.sim_config.as_str_dict(),
         "dataset_hash": input_info.dataset_hash,
         "dataset_bytes": input_info.dataset_bytes,
@@ -204,8 +203,8 @@ def create_request(email: str, conf_file_path: str | Path) -> Tuple[Dict, Path]:
     return request_data, input_info.dataset_path
 
 
-def estimate_lattice_update(domain_info: DomainInfo, sim_config: SimulationConfig) -> float:
-    """"""
+def estimate_timesteps(domain_info: DomainInfo, sim_config: SimulationConfig) -> int:
+    """Estimate the number of time steps necessary."""
     from itzi.surfaceflow import SurfaceFlowSimulation
 
     cfl = 0.5
@@ -215,15 +214,35 @@ def estimate_lattice_update(domain_info: DomainInfo, sim_config: SimulationConfi
 
     dt = SurfaceFlowSimulation.dt_s(cfl, min_dim, g, maxh)
     duration = (sim_config.end_time - sim_config.start_time).total_seconds()
-    num_time_steps = duration / dt
-    num_cells = domain_info.cols * domain_info.rows
-    return num_cells * num_time_steps
+    return int(duration / dt)
 
 
-def blake2b(file_path: str, digest_size: int = 64):
+def blake2b_hex(file_path: Path, digest_size: int = 64) -> str:
     """Return the hex digest of a file."""
     hasher = hashlib.blake2b(digest_size=digest_size)
     with open(file_path, "rb") as f:
         for chunk in iter(lambda: f.read(4096), b""):
             hasher.update(chunk)
     return hasher.hexdigest()
+
+
+def md5_base64(file_path: Path) -> str:
+    """Calculates the Base64-encoded MD5 digest."""
+    md5_hasher = hashlib.md5()
+    with open(file_path, "rb") as f:
+        for chunk in iter(lambda: f.read(4096), b""):
+            md5_hasher.update(chunk)
+    md5_hash = md5_hasher.digest()  # Get the binary digest
+    md5_base64 = base64.b64encode(md5_hash).decode("utf-8")  # Base64 encode the binary digest
+    return md5_base64
+
+
+def request_simulation(session_token: str, data: Mapping, url: str = urls.PUSH_ENDPOINT) -> Dict:
+    """Send simulation metadata. Return the URL for upload."""
+    headers = {"X-Session-Token": session_token}
+    with requests.Session() as session:
+        response = session.post(url, json=data, headers=headers)
+    if response.status_code == 200:
+        return json.loads(response._content)
+    else:
+        raise RuntimeError(f"Something went wrong: {response}")

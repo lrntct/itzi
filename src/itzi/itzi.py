@@ -29,6 +29,7 @@ from __future__ import annotations
 import os
 import sys
 import time
+from pathlib import Path
 import traceback
 from datetime import datetime, timedelta
 from importlib.metadata import version
@@ -392,15 +393,20 @@ def itzi_cloud_login(cli_args):
 
 def itzi_cloud_push(cli_args):
     """Pack the input data, then submit a request to the cloud compute provider."""
-    from itzi.cloud.push import create_request
+    from itzi.cloud.push import create_request, request_simulation
+    from itzi.cloud.auth import get_token
 
     os.environ["ITZI_VERBOSE"] = str(VerbosityLevel.MESSAGE)
 
     email = check_login()
 
     for conf_file in cli_args.config_file:
-        request, input_path = create_request(email, conf_file)
-        print(request)
+        conf_file_name = Path(conf_file).name
+        msgr.message(f"Packing input data for {conf_file_name}...")
+        request_data, input_path = create_request(email, conf_file)
+        msgr.message(f"Sending request for {conf_file_name}...")
+        response_dict = request_simulation(session_token=get_token(email), data=request_data)
+        print(response_dict)
 
 
 def itzi_cloud_status(cli_args):
