@@ -12,8 +12,8 @@ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 GNU General Public License for more details.
 """
 
-API_BASE = "http://127.0.0.1:8000"
+API_BASE = "http://localhost:8000"
 
 LOGIN_ENDPOINT = f"{API_BASE}/_allauth/app/v1/auth/login"
 SESSION_ENDPOINT = f"{API_BASE}/_allauth/app/v1/auth/session"
-PUSH_ENDPOINT = f"{API_BASE}/api/itzi_push"
+PUSH_ENDPOINT = f"{API_BASE}/itzi-api/itzi_push"
