@@ -81,8 +81,8 @@ def pack_input(config_reader: ConfigReader) -> InputInfo:
             raster_mask_id=grass_params["mask"],
         )
         domain_info = DomainInfo(
-            rows=grass_interface.xr,
-            cols=grass_interface.yr,
+            rows=grass_interface.yr,
+            cols=grass_interface.xr,
             ewres=grass_interface.dx,
             nsres=grass_interface.dy,
         )
@@ -237,12 +237,26 @@ def md5_base64(file_path: Path) -> str:
     return md5_base64
 
 
-def request_simulation(session_token: str, data: Mapping, url: str = urls.PUSH_ENDPOINT) -> Dict:
+def request_simulation(
+    session_token: str, metadata: Mapping, url: str = urls.PUSH_ENDPOINT
+) -> Dict:
     """Send simulation metadata. Return the URL for upload."""
     headers = {"X-Session-Token": session_token}
     with requests.Session() as session:
-        response = session.post(url, json=data, headers=headers)
+        response = session.post(url, json=metadata, headers=headers)
     if response.status_code == 200:
         return json.loads(response._content)
     else:
         raise RuntimeError(f"Something went wrong: {response}")
+
+
+def upload_input(signed_url: str, payload: Path, content_md5: str, content_type: str) -> bool:
+    headers = {"content-md5": content_md5, "content-type": content_type}
+    with requests.Session() as session:
+        with open(payload, mode="rb") as data:
+            response = session.put(signed_url, data=data, headers=headers)
+    if response.status_code == 200:
+        # return json.loads(response._content)
+        return True
+    else:
+        raise RuntimeError(f"Something went wrong: {response.__dict__}")

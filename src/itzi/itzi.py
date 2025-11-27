@@ -393,7 +393,7 @@ def itzi_cloud_login(cli_args):
 
 def itzi_cloud_push(cli_args):
     """Pack the input data, then submit a request to the cloud compute provider."""
-    from itzi.cloud.push import create_request, request_simulation
+    from itzi.cloud.push import create_request, request_simulation, upload_input
     from itzi.cloud.auth import get_token
 
     os.environ["ITZI_VERBOSE"] = str(VerbosityLevel.MESSAGE)
@@ -402,11 +402,19 @@ def itzi_cloud_push(cli_args):
 
     for conf_file in cli_args.config_file:
         conf_file_name = Path(conf_file).name
-        msgr.message(f"Packing input data for {conf_file_name}...")
+        msgr.message(f"{conf_file_name}: Packing input data...")
         request_data, input_path = create_request(email, conf_file)
-        msgr.message(f"Sending request for {conf_file_name}...")
-        response_dict = request_simulation(session_token=get_token(email), data=request_data)
-        print(response_dict)
+        msgr.message(f"{conf_file_name}: Requesting cloud simulation...")
+        response_dict = request_simulation(session_token=get_token(email), metadata=request_data)
+        msgr.message(f"{conf_file_name}: Uploading input data...")
+        upload_ok = upload_input(
+            signed_url=response_dict["upload_url"],
+            payload=input_path,
+            content_md5=request_data["dataset_hash"],
+            content_type="application/gzip",
+        )
+        if upload_ok:
+            msgr.message(f"{conf_file_name}: Uploading input data success!")
 
 
 def itzi_cloud_status(cli_args):
