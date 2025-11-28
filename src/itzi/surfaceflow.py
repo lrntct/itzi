@@ -12,6 +12,7 @@ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 GNU General Public License for more details.
 """
 
+from __future__ import annotations
 import math
 from datetime import timedelta
 from typing import TYPE_CHECKING
@@ -24,6 +25,7 @@ from itzi.itzi_error import NullError, DtError
 
 if TYPE_CHECKING:
     from itzi.data_containers import SurfaceFlowParameters
+    from itzi.rasterdomain import RasterDomain
 
 
 class SurfaceFlowSimulation:
@@ -36,23 +38,23 @@ class SurfaceFlowSimulation:
 
     def __init__(
         self,
-        domain,
-        flow_params: "SurfaceFlowParameters",
+        domain: RasterDomain,
+        flow_params: SurfaceFlowParameters,
     ):
         self.dom = domain
-        self.dtmax = flow_params.dtmax
-        self.cfl = flow_params.cfl
-        self.g = flow_params.g
-        self.theta = flow_params.theta
-        self.min_flow_depth = flow_params.hmin
-        self.slope_threshold = flow_params.slope_threshold
-        self.max_slope = flow_params.max_slope
-        self.v_routing = flow_params.vrouting
-        self.dx = domain.dx
-        self.dy = domain.dy
+        self.dtmax = float(flow_params.dtmax)
+        self.cfl = float(flow_params.cfl)
+        self.g = float(flow_params.g)
+        self.theta = float(flow_params.theta)
+        self.min_flow_depth = float(flow_params.hmin)
+        self.slope_threshold = float(flow_params.slope_threshold)
+        self.max_slope = float(flow_params.max_slope)
+        self.v_routing = float(flow_params.vrouting)
+        self.dx = float(domain.dx)
+        self.dy = float(domain.dy)
         self.cell_surf = self.dx * self.dy
 
-        self._dt = None
+        self._dt: float = None
         # 1e-6 second
         self._dt_fudge = timedelta.resolution.total_seconds()
 
@@ -90,11 +92,11 @@ class SurfaceFlowSimulation:
 
     @staticmethod
     def dt_s(cfl, min_dim, g, maxh):
-        return cfl * (min_dim / (math.sqrt(g * maxh)))
+        return float(cfl * (min_dim / (math.sqrt(g * maxh))))
 
     @property
     def dt(self):
-        return timedelta(seconds=self._dt)
+        return timedelta(seconds=float(self._dt))
 
     @dt.setter
     def dt(self, newdt):
