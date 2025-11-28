@@ -67,7 +67,7 @@ class InputInfo:
 
 
 def pack_input(config_reader: ConfigReader) -> InputInfo:
-    """Pack all input data into a netcdf file."""
+    """Pack all input data into a tared zarr."""
     sim_config: SimulationConfig = config_reader.get_sim_params()
     grass_params = config_reader.grass_params
     with GrassSessionManager(grass_params):
@@ -99,6 +99,19 @@ def pack_input(config_reader: ConfigReader) -> InputInfo:
             tar_path = temp_dir_path / Path(f"itzi-input-{uuid.uuid4()}.tgz")
             with tarfile.open(name=tar_path, mode="x:gz") as tar_file:
                 tar_file.add(temp_path_zarr, arcname="itzi_input.zarr")
+
+    # remove mapset info from all maps in sim_config
+    cleaned_input_map_names = {
+        key: value.split("@")[0] for key, value in sim_config.input_map_names.items() if value
+    }
+    cleaned_output_map_names = {
+        key: value.split("@")[0] for key, value in sim_config.output_map_names.items() if value
+    }
+    sim_config = dataclasses.replace(
+        sim_config,
+        input_map_names=cleaned_input_map_names,
+        output_map_names=cleaned_output_map_names,
+    )
 
     return InputInfo(
         sim_config=sim_config,
