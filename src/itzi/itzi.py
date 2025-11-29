@@ -225,9 +225,9 @@ def sim_runner_worker(conf_file: str, hotstart_file: str | None):
                 )
                 sim_runner.run().finalize()
     except itzi_error.ItziError:
-        # if an Itzï error, only print the last line of the traceback
-        traceback_lines = traceback.format_exc().splitlines()
-        msgr.warning("Error during execution: {}".format(traceback_lines[-1]))
+        # ItziError exceptions are already logged at their source (e.g., msgr.fatal())
+        # The parent process will report the failure via itzi_run_one() exit code
+        pass
     except Exception:
         msgr.warning("Error during execution: {}".format(traceback.format_exc()))
 
@@ -402,19 +402,22 @@ def itzi_cloud_push(cli_args):
 
     for conf_file in cli_args.config_file:
         conf_file_name = Path(conf_file).name
-        msgr.message(f"{conf_file_name}: Packing input data...")
         request_data, input_path = create_request(email, conf_file)
-        msgr.message(f"{conf_file_name}: Requesting cloud simulation...")
-        response_dict = request_simulation(session_token=get_token(email), metadata=request_data)
-        msgr.message(f"{conf_file_name}: Uploading input data...")
-        upload_ok = upload_input(
-            signed_url=response_dict["upload_url"],
-            payload=input_path,
-            content_md5=request_data["dataset_hash"],
-            content_type="application/gzip",
-        )
-        if upload_ok:
-            msgr.message(f"{conf_file_name}: Uploading input data success!")
+        try:
+            response_dict = request_simulation(
+                session_token=get_token(email), metadata=request_data
+            )
+            msgr.message(f"{conf_file_name}: Uploading input data...")
+            upload_ok = upload_input(
+                signed_url=response_dict["upload_url"],
+                payload=input_path,
+                content_md5=request_data["dataset_hash"],
+                content_type="application/gzip",
+            )
+            if upload_ok:
+                msgr.message(f"{conf_file_name}: Uploading input data success!")
+        except Exception as e:
+            msgr.warning(f"{conf_file_name}: Error during cloud submission: {e}")
 
 
 def itzi_cloud_status(cli_args):
