@@ -16,5 +16,4 @@ API_BASE = "http://localhost:8000"
 
 LOGIN_ENDPOINT = f"{API_BASE}/_allauth/app/v1/auth/login"
 SESSION_ENDPOINT = f"{API_BASE}/_allauth/app/v1/auth/session"
-PUSH_ENDPOINT = f"{API_BASE}/itzi-api/itzi_push"
-STATUS_ENDPOINT = f"{API_BASE}/itzi-api/simulation_tasks"
+SIMULATIONS_ENDPOINT = f"{API_BASE}/itzi-api/simulations"

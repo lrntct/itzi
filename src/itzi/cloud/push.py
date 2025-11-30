@@ -251,13 +251,13 @@ def md5_base64(file_path: Path) -> str:
 
 
 def request_simulation(
-    session_token: str, metadata: Mapping, url: str = urls.PUSH_ENDPOINT
+    session_token: str, metadata: Mapping, endpoint: str = urls.SIMULATIONS_ENDPOINT
 ) -> Dict:
     """Send simulation metadata. Return the URL for upload."""
     headers = {"X-Session-Token": session_token}
     with requests.Session() as session:
-        response = session.post(url, json=metadata, headers=headers)
-    if response.status_code == 200:
+        response = session.post(endpoint, json=metadata, headers=headers)
+    if response.status_code == 201:
         return json.loads(response._content)
     else:
         raise RuntimeError(f"Something went wrong: {response}")

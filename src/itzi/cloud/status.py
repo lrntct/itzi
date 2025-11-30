@@ -44,8 +44,8 @@ class SimulationTaskSchema:
     results_bytes: int
 
 
-def get_simulation_status(
-    session_token: str, url: str = urls.STATUS_ENDPOINT
+def get_simulations_list(
+    session_token: str, url: str = urls.SIMULATIONS_ENDPOINT
 ) -> list[SimulationTaskSchema]:
     """Get the status of all simulations for the authenticated user.
 
@@ -88,7 +88,50 @@ def get_simulation_status(
     return tasks
 
 
-def display_simulation_status(tasks: list[SimulationTaskSchema]) -> None:
+def get_simulation(
+    session_token: str, fingerprint: str, url: str = urls.SIMULATIONS_ENDPOINT
+) -> SimulationTaskSchema:
+    """Get the status of a single simulation by fingerprint.
+
+    Args:
+        session_token: Authentication session token
+        fingerprint: Simulation fingerprint to query
+        url: Base API endpoint URL for simulations
+
+    Returns:
+        SimulationTaskSchema object containing simulation status
+    """
+    headers = {"X-Session-Token": session_token}
+    simulation_url = f"{url}/{fingerprint}"
+
+    with requests.Session() as session:
+        response = session.get(simulation_url, headers=headers)
+
+        if response.status_code != 200:
+            msgr.fatal(
+                f"Failed to retrieve simulation status. "
+                f"Code: {response.status_code}. Reason: {response.reason}"
+            )
+
+        response_data = json.loads(response.text)
+
+    # Parse the response and create SimulationTaskSchema object
+    # The API returns a single task object
+    task = SimulationTaskSchema(
+        team=response_data.get("team", ""),
+        created_on=datetime.fromisoformat(response_data["created_on"]),
+        last_updated=datetime.fromisoformat(response_data["last_updated"]),
+        fingerprint=response_data["fingerprint"],
+        status=response_data["status"],
+        progress=response_data["progress"],
+        input_bytes=response_data["input_bytes"],
+        results_bytes=response_data["results_bytes"],
+    )
+
+    return task
+
+
+def display_simulations_list(tasks: list[SimulationTaskSchema]) -> None:
     """Display simulation status in a table format similar to docker ps.
 
     Args:
@@ -125,12 +168,12 @@ def display_simulation_status(tasks: list[SimulationTaskSchema]) -> None:
             return "just now"
 
     # Print header
-    header = f"{'FINGERPRINT':<14} {'STATUS':<12} {'PROGRESS':<10} {'CREATED':<18} {'UPDATED':<18} {'TEAM':<15} {'INPUT SIZE':<12} {'RESULTS SIZE':<10}"
+    header = f"{'FINGERPRINT':<17} {'STATUS':<12} {'PROGRESS':<10} {'CREATED':<18} {'UPDATED':<18} {'TEAM':<15} {'INPUT SIZE':<12} {'RESULTS SIZE':<10}"
     msgr.message(header)
 
     # Print each task
     for task in tasks:
-        fingerprint = task.fingerprint[:12]  # Show first 12 chars like docker
+        fingerprint = task.fingerprint
         status = task.status[:11]  # Truncate if needed
         progress = f"{task.progress / 10:.1f}%"  # received progress is in per mille
         created = format_time_ago(task.created_on)
@@ -139,5 +182,5 @@ def display_simulation_status(tasks: list[SimulationTaskSchema]) -> None:
         input_size = format_bytes(task.input_bytes)
         results_size = format_bytes(task.results_bytes)
 
-        row = f"{fingerprint:<14} {status:<12} {progress:<10} {created:<18} {updated:<18} {team:<15} {input_size:<12} {results_size:<10}"
+        row = f"{fingerprint:<17} {status:<12} {progress:<10} {created:<18} {updated:<18} {team:<15} {input_size:<12} {results_size:<10}"
         msgr.message(row)

@@ -421,8 +421,8 @@ def itzi_cloud_push(cli_args):
 
 
 def itzi_cloud_status(cli_args):
-    """List the requested simulations."""
-    from itzi.cloud.status import get_simulation_status, display_simulation_status
+    """List the requested simulations or display status of a specific simulation."""
+    from itzi.cloud.status import get_simulations_list, get_simulation, display_simulations_list
     from itzi.cloud.auth import get_token
 
     os.environ["ITZI_VERBOSE"] = str(VerbosityLevel.MESSAGE)
@@ -431,8 +431,14 @@ def itzi_cloud_status(cli_args):
     if not email:
         return
 
-    tasks = get_simulation_status(session_token=get_token(email))
-    display_simulation_status(tasks)
+    if cli_args.fingerprint:
+        # Query single simulation by fingerprint
+        task = get_simulation(session_token=get_token(email), fingerprint=cli_args.fingerprint)
+        display_simulations_list([task])
+    else:
+        # List all simulations
+        tasks = get_simulations_list(session_token=get_token(email))
+        display_simulations_list(tasks)
 
 
 def itzi_cloud_pull(cli_args):
