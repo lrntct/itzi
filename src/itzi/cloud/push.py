@@ -16,7 +16,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Dict, Mapping, Tuple
 from pathlib import Path
 import tempfile
-import dataclasses
 import json
 import uuid
 import tarfile
@@ -31,10 +30,10 @@ from itzi.grass_session import GrassSessionManager
 from itzi.configreader import ConfigReader
 from itzi.const import TemporalType, DefaultValues
 from itzi.cloud import urls
+from itzi.cloud.models import InputInfo, DomainInfo
 
 if TYPE_CHECKING:
     from itzi.data_containers import SimulationConfig
-    from itzi.configreader import ConfigReader
     from itzi.providers.grass_interface import GrassInterface
 
 try:
@@ -45,25 +44,6 @@ except ImportError:
         "'uv tool install itzi[cloud]' "
         "or 'pip install itzi[cloud]'"
     )
-
-
-@dataclasses.dataclass(frozen=True)
-class DomainInfo:
-    rows: int
-    cols: int
-    ewres: float
-    nsres: float
-
-
-@dataclasses.dataclass(frozen=True)
-class InputInfo:
-    """Store information about input data."""
-
-    sim_config: SimulationConfig
-    dataset_path: Path  # Path to the tgz file containing the zarr of input maps
-    dataset_hash: str  # Base64 MD5 of the dataset
-    dataset_bytes: int
-    domain_info: DomainInfo
 
 
 def pack_input(config_reader: ConfigReader) -> InputInfo:
@@ -107,10 +87,11 @@ def pack_input(config_reader: ConfigReader) -> InputInfo:
     cleaned_output_map_names = {
         key: value.split("@")[0] for key, value in sim_config.output_map_names.items() if value
     }
-    sim_config = dataclasses.replace(
-        sim_config,
-        input_map_names=cleaned_input_map_names,
-        output_map_names=cleaned_output_map_names,
+    sim_config = sim_config.model_copy(
+        update={
+            "input_map_names": cleaned_input_map_names,
+            "output_map_names": cleaned_output_map_names,
+        }
     )
 
     return InputInfo(
@@ -192,7 +173,7 @@ def create_request(email: str, conf_file_path: str | Path) -> Tuple[Dict, Path]:
     input_info = pack_input(config_reader)
 
     # Unique request identifier (email + datetime + config + input_hash) with blake2b and 8 bytes digest
-    config_json = json.dumps(input_info.sim_config.as_str_dict())
+    config_json = json.dumps(input_info.sim_config.model_dump(mode="json"))
     fingerprint_source = (
         f"{email}{datetime.now(timezone.utc)}{config_json}{input_info.dataset_hash}"
     )
@@ -208,10 +189,10 @@ def create_request(email: str, conf_file_path: str | Path) -> Tuple[Dict, Path]:
     request_data = {
         "fingerprint": request_fingerprint,
         "estimated_timesteps": estimated_ts,
-        "sim_config": input_info.sim_config.as_str_dict(),
+        "sim_config": input_info.sim_config.model_dump(mode="json"),
         "dataset_hash": input_info.dataset_hash,
         "dataset_bytes": input_info.dataset_bytes,
-        "domain_info": dataclasses.asdict(input_info.domain_info),
+        "domain_info": input_info.domain_info.model_dump(),
     }
     return request_data, input_info.dataset_path
 
