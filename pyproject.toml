@@ -11,7 +11,8 @@ dependencies = [
     "bmipy>=2.0.1",
     "pydantic>=2.13.4",
 ]
-requires-python = ">=3.12,<3.14"  # 3.12 for typing. pyswmm does not support python > 3.13
+# Need 3.12 for safe tar extraction and typing. pyswmm does not support python > 3.13
+requires-python = ">=3.12,<3.14"
 readme = "README.md"
 license = "GPL-2.0-or-later"
 keywords = ["science", "engineering", "hydrology", "flood"]

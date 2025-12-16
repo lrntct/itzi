@@ -74,13 +74,16 @@ def build_parser() -> argparse.ArgumentParser:
         "status", help="Display status of submitted cloud simulations."
     )
     cloud_status_parser.add_argument(
-    "fingerprint",
-    nargs="?",
-    help="Optional simulation fingerprint to query a specific simulation.",
-)
+        "fingerprint",
+        nargs="?",
+        help="Optional simulation fingerprint to query a specific simulation.",
+    )
 
     cloud_pull_parser = cloud_subparser.add_parser(
         "pull", help="Pull results from a complete cloud simulation."
     )
-
+    cloud_pull_parser.add_argument(
+        "fingerprint",
+        help="Simulation fingerprint to download results from.",
+    )
     return arg_parser

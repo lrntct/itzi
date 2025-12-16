@@ -360,7 +360,7 @@ class GrassInterface:
         """Set null values under a given threshold"""
         gscript.run_command("r.null", flags="f", map=map_id, setnull=f"0.0-{threshold}")
 
-    def get_sim_extend_in_stds_unit(self, strds) -> tuple[int|datetime, int|datetime]:
+    def get_sim_extend_in_stds_unit(self, strds) -> tuple[int | datetime, int | datetime]:
         """Take a strds object as input
         Return the simulation start_time and end_time, expressed in
         the unit of the input strds

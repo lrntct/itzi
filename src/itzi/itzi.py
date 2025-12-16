@@ -443,7 +443,24 @@ def itzi_cloud_status(cli_args):
 
 def itzi_cloud_pull(cli_args):
     """Retrieve results from the cloud and insert them in the GRASS DB."""
-    check_login()
+    from itzi.cloud.pull import get_simulation_results_url, pull_simulation_results
+    from itzi.cloud.auth import get_token
+
+    os.environ["ITZI_VERBOSE"] = str(VerbosityLevel.MESSAGE)
+
+    email = check_login()
+    if not email:
+        return
+
+    msgr.message(f"Retrieving results for simulation {cli_args.fingerprint}...")
+
+    # Get download information
+    results_info = get_simulation_results_url(
+        session_token=get_token(email), fingerprint=cli_args.fingerprint
+    )
+
+    # Pull and load the results
+    pull_simulation_results(download_url=results_info["download_url"])
 
 
 def check_login() -> str | None:
