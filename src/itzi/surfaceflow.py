@@ -12,6 +12,7 @@ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 GNU General Public License for more details.
 """
 
+from __future__ import annotations
 import math
 from datetime import timedelta
 from typing import TYPE_CHECKING
@@ -24,6 +25,7 @@ from itzi.itzi_error import NullError, DtError
 
 if TYPE_CHECKING:
     from itzi.data_containers import SurfaceFlowParameters
+    from itzi.rasterdomain import RasterDomain
 
 
 class SurfaceFlowSimulation:
@@ -36,8 +38,8 @@ class SurfaceFlowSimulation:
 
     def __init__(
         self,
-        domain,
-        flow_params: "SurfaceFlowParameters",
+        domain: RasterDomain,
+        flow_params: SurfaceFlowParameters,
     ):
         self.dom = domain
         self.dtmax = flow_params.dtmax
