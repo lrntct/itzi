@@ -33,7 +33,7 @@ from itzi.cloud import urls
 from itzi.cloud.models import InputInfo, DomainInfo
 
 if TYPE_CHECKING:
-    from itzi.data_containers import SimulationConfig
+    from itzi.data_containers import SimulationConfig, GrassParams
     from itzi.providers.grass_interface import GrassInterface
 
 try:
@@ -46,10 +46,8 @@ except ImportError:
     )
 
 
-def pack_input(config_reader: ConfigReader) -> InputInfo:
+def pack_input(sim_config: SimulationConfig, grass_params: GrassParams) -> InputInfo:
     """Pack all input data into a tared zarr."""
-    sim_config: SimulationConfig = config_reader.get_sim_params()
-    grass_params = config_reader.grass_params
     with GrassSessionManager(grass_params):
         from itzi.providers.grass_interface import GrassInterface
 
@@ -57,8 +55,8 @@ def pack_input(config_reader: ConfigReader) -> InputInfo:
             start_time=sim_config.start_time,
             end_time=sim_config.start_time,
             dtype=np.float32,
-            region_id=grass_params["region"],
-            raster_mask_id=grass_params["mask"],
+            region_id=grass_params.region,
+            raster_mask_id=grass_params.mask,
         )
         domain_info = DomainInfo(
             rows=grass_interface.yr,
@@ -104,7 +102,7 @@ def pack_input(config_reader: ConfigReader) -> InputInfo:
 
 
 def to_zarr(
-    cat_dict: Mapping, grass_params: Mapping, sim_config: SimulationConfig, tempdir: Path
+    cat_dict: Mapping, grass_params: GrassParams, sim_config: SimulationConfig, tempdir: Path
 ) -> None:
     """Read the itzi input from GRASS as an xr.Dataset.
     Select the correct time period.
@@ -128,11 +126,11 @@ def to_zarr(
     ds_select.to_zarr(tempdir)
 
 
-def read_all_maps(cat_dict: Mapping, grass_params: Mapping) -> xr.Dataset:
+def read_all_maps(cat_dict: Mapping, grass_params: GrassParams) -> xr.Dataset:
     dataset_list = []
     for mapset, map_dict in cat_dict.items():
-        grass_db = Path(grass_params["grassdata"])
-        grass_project = grass_db / Path(grass_params["location"])
+        grass_db = Path(grass_params.grassdata)
+        grass_project = grass_db / Path(grass_params.location)
         mapset_path = grass_project / Path(mapset)
         ds = xr.open_dataset(mapset_path, **map_dict)
         dataset_list.append(ds)
@@ -170,7 +168,9 @@ def create_request(email: str, conf_file_path: str | Path) -> Tuple[Dict, Path]:
     """"""
     config_reader = ConfigReader(conf_file_path)
     # Pack the input
-    input_info = pack_input(config_reader)
+    sim_config: SimulationConfig = config_reader.get_sim_params()
+    grass_params: GrassParams = config_reader.get_grass_params()
+    input_info = pack_input(sim_config, grass_params)
 
     # Unique request identifier (email + datetime + config + input_hash) with blake2b and 8 bytes digest
     config_json = json.dumps(input_info.sim_config.model_dump(mode="json"))
