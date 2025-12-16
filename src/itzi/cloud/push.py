@@ -31,6 +31,7 @@ from itzi.configreader import ConfigReader
 from itzi.const import TemporalType, DefaultValues
 from itzi.cloud import urls
 from itzi.cloud.models import InputInfo, DomainInfo
+from itzi.cloud.grass_utils import get_grass_params_from_env
 
 if TYPE_CHECKING:
     from itzi.data_containers import SimulationConfig, GrassParams
@@ -164,12 +165,32 @@ def list_input_maps(
     return categorized
 
 
-def create_request(email: str, conf_file_path: str | Path) -> Tuple[Dict, Path]:
-    """"""
+def create_request(email: str, conf_file_path: str | Path) -> Tuple[Dict, Path, GrassParams]:
+    """Create a simulation request.
+
+    Detects active GRASS session and merges with config file parameters.
+
+    Parameters
+    ----------
+    email : str
+        User email address.
+    conf_file_path : str | Path
+        Path to the configuration file.
+
+    Returns
+    -------
+    Tuple[Dict, Path, GrassParams]
+        Request data dictionary, input dataset path, and the GRASS parameters used.
+    """
+
     config_reader = ConfigReader(conf_file_path)
     # Pack the input
     sim_config: SimulationConfig = config_reader.get_sim_params()
-    grass_params: GrassParams = config_reader.get_grass_params()
+
+    # Get GRASS params with session detection and priority logic
+    config_grass_params = config_reader.get_grass_params()
+    grass_params, _source = get_grass_params_from_env(config_grass_params)
+
     input_info = pack_input(sim_config, grass_params)
 
     # Unique request identifier (email + datetime + config + input_hash) with blake2b and 8 bytes digest
@@ -194,7 +215,7 @@ def create_request(email: str, conf_file_path: str | Path) -> Tuple[Dict, Path]:
         "dataset_bytes": input_info.dataset_bytes,
         "domain_info": input_info.domain_info.model_dump(),
     }
-    return request_data, input_info.dataset_path
+    return request_data, input_info.dataset_path, grass_params
 
 
 def estimate_timesteps(domain_info: DomainInfo, sim_config: SimulationConfig) -> int:

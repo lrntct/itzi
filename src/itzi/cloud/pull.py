@@ -13,6 +13,7 @@ GNU General Public License for more details.
 """
 
 from __future__ import annotations
+from typing import TYPE_CHECKING
 import json
 import tarfile
 import tempfile
@@ -21,6 +22,10 @@ from pathlib import Path
 
 import itzi.messenger as msgr
 from itzi.cloud import urls
+from itzi.grass_session import GrassSessionManager
+
+if TYPE_CHECKING:
+    from itzi.data_containers import GrassParams
 
 try:
     import requests
@@ -97,25 +102,49 @@ def download_results(download_url: str, temp_dir: Path) -> Path:
     return temp_file
 
 
-def load_to_grass(temp_data_path: Path) -> None:
+def load_to_grass(temp_data_path: Path, grass_params: GrassParams) -> None:
     """Load simulation results into GRASS database.
 
-    This is a placeholder function to be implemented later.
-
-    Args:
-        temp_data_path: Path to the downloaded results data
+    Parameters
+    ----------
+    temp_data_path : Path
+        Path to the downloaded results data.
+    grass_params : GrassParams
+        GRASS parameters specifying where to load the results.
     """
-    # TODO: Implement loading results into GRASS
     ds_results = xr.open_zarr(temp_data_path)
+    msgr.message("Results dataset summary:")
     print(ds_results)
-    print(ds_results["itzi_demo_water_depth"].max().compute())
+
+    # map time dimension of all strds
+    time_mapping = {"start_time": "time"}
+    dims_mapping = {}
+    for var, da in ds_results.data_vars.items():
+        if "time" in da.coords.keys():
+            dims_mapping[var] = time_mapping
+    print(dims_mapping)
+
+    with GrassSessionManager(grass_params):
+        # xarray_grass is imported here because it needs an active grass session
+        from xarray_grass import to_grass
+
+        to_grass(ds_results, dims=dims_mapping)
+
+    msgr.message(f"Maximum water depth: {ds_results['itzi_demo_water_depth'].max().compute()}")
+    msgr.message(
+        f"Results will be loaded to: {grass_params.grassdata}/{grass_params.location}/{grass_params.mapset}"
+    )
 
 
-def pull_simulation_results(download_url: str) -> None:
+def pull_simulation_results(download_url: str, grass_params: GrassParams) -> None:
     """Pull simulation results from the cloud and load them into GRASS.
 
-    Args:
-        download_url: Signed URL to download results from
+    Parameters
+    ----------
+    download_url : str
+        Signed URL to download results from.
+    grass_params : GrassParams
+        GRASS parameters specifying where to load the results.
     """
     # Create temporary directory for download
     with tempfile.TemporaryDirectory(prefix="itzi-results-") as temp_dir:
@@ -137,6 +166,6 @@ def pull_simulation_results(download_url: str) -> None:
 
         # Load results into GRASS
         msgr.message("Loading results into GRASS...")
-        load_to_grass(extract_dir / Path("results.zarr"))
+        load_to_grass(extract_dir / Path("results.zarr"), grass_params)
 
     msgr.message("Results successfully retrieved!")

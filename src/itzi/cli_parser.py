@@ -98,4 +98,16 @@ def build_parser() -> argparse.ArgumentParser:
         "fingerprint",
         help="Simulation fingerprint to download results from.",
     )
+    cloud_pull_parser.add_argument(
+        "--gisdb",
+        help="Override disk location of the GRASS GIS database to load the results into.",
+    )
+    cloud_pull_parser.add_argument(
+        "--project",
+        help="Override name of the GRASS project to load the results into.",
+    )
+    cloud_pull_parser.add_argument(
+        "--mapset",
+        help="Override name of the GRASS mapset to load the results into.",
+    )
     return arg_parser
