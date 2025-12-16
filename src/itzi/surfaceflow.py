@@ -83,9 +83,9 @@ class SurfaceFlowSimulation:
         min_dim = min(self.dx, self.dy)
         if maxh > 0:
             dt = self.dt_s(self.cfl, min_dim, self.g, maxh)
-            self._dt = min(self.dtmax, dt)
+            self._dt = float(min(self.dtmax, dt))
         else:
-            self._dt = self.dtmax
+            self._dt = float(self.dtmax)
         if self._dt <= self._dt_fudge:
             raise DtError(f"Tiny computed dt ({self._dt}s)")
         return self
@@ -99,7 +99,7 @@ class SurfaceFlowSimulation:
         return timedelta(seconds=self._dt)
 
     @dt.setter
-    def dt(self, newdt):
+    def dt(self, newdt: timedelta):
         """return an error if new dt is higher than current one or negative"""
         newdt_s = newdt.total_seconds()
         if self._dt is None:
