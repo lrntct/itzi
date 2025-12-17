@@ -395,7 +395,7 @@ def itzi_cloud_login(cli_args):
 def itzi_cloud_push(cli_args):
     """Pack the input data, then submit a request to the cloud compute provider."""
     from itzi.cloud.push import create_request, request_simulation, upload_input
-    from itzi.cloud.auth import get_token
+    from itzi.cloud.auth import get_token, check_login
     from itzi.cloud.metadata_storage import save_simulation_metadata
 
     os.environ["ITZI_VERBOSE"] = str(VerbosityLevel.MESSAGE)
@@ -436,7 +436,7 @@ def itzi_cloud_push(cli_args):
 def itzi_cloud_status(cli_args):
     """List the requested simulations or display status of a specific simulation."""
     from itzi.cloud.status import get_simulations_list, get_simulation, display_simulations_list
-    from itzi.cloud.auth import get_token
+    from itzi.cloud.auth import get_token, check_login
 
     os.environ["ITZI_VERBOSE"] = str(VerbosityLevel.MESSAGE)
 
@@ -455,7 +455,7 @@ def itzi_cloud_status(cli_args):
 def itzi_cloud_pull(cli_args):
     """Retrieve results from the cloud and insert them in the GRASS DB."""
     from itzi.cloud.pull import get_simulation_results_url, pull_simulation_results
-    from itzi.cloud.auth import get_token
+    from itzi.cloud.auth import get_token, check_login
     from itzi.cloud.grass_utils import get_active_grass_params
     from itzi.cloud.metadata_storage import load_simulation_metadata
     from itzi.data_containers import GrassParams
@@ -529,15 +529,6 @@ def itzi_cloud_pull(cli_args):
     pull_simulation_results(
         download_url=results_info["download_url"], grass_params=grass_params, overwrite=cli_args.o
     )
-
-
-def check_login() -> str:
-    from itzi.cloud.auth import get_email, is_logged
-
-    email = get_email()
-    if not is_logged(email):
-        msgr.fatal("Please log in first.")
-    return email
 
 
 if __name__ == "__main__":

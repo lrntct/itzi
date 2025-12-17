@@ -30,6 +30,14 @@ except ImportError:
     )
 
 
+def check_login() -> str:
+    """Return the email if the user is logged in."""
+    email = get_email()
+    if not is_logged(email):
+        msgr.fatal("Please log in first.")
+    return email
+
+
 def login(email: str, password: str, url: str = urls.LOGIN_ENDPOINT) -> None:
     """Log into the cloud service.
     Store session token into the system keyring.
