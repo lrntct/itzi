@@ -413,7 +413,7 @@ def itzi_cloud_push(cli_args):
             upload_ok = upload_input(
                 signed_url=response_dict["upload_url"],
                 payload=input_path,
-                content_md5=request_data["dataset_hash"],
+                content_md5=request_data.dataset_hash,
                 content_type="application/gzip",
             )
             if upload_ok:
@@ -421,12 +421,12 @@ def itzi_cloud_push(cli_args):
                 # Save metadata for later retrieval
                 try:
                     save_simulation_metadata(
-                        fingerprint=request_data["fingerprint"],
+                        fingerprint=request_data.fingerprint,
                         email=email,
                         config_file=str(conf_file),
                         grass_params=grass_params,
                     )
-                    msgr.debug(f"Saved metadata for simulation {request_data['fingerprint']}")
+                    msgr.debug(f"Saved metadata for simulation {request_data.fingerprint}")
                 except Exception as e:
                     msgr.warning(f"Failed to save metadata: {e}")
         except Exception as e:
@@ -441,8 +441,6 @@ def itzi_cloud_status(cli_args):
     os.environ["ITZI_VERBOSE"] = str(VerbosityLevel.MESSAGE)
 
     email = check_login()
-    if not email:
-        return
 
     if cli_args.fingerprint:
         # Query single simulation by fingerprint
@@ -465,8 +463,6 @@ def itzi_cloud_pull(cli_args):
     os.environ["ITZI_VERBOSE"] = str(VerbosityLevel.MESSAGE)
 
     email = check_login()
-    if not email:
-        return
 
     msgr.message(f"Retrieving results for simulation {cli_args.fingerprint}...")
 
@@ -517,6 +513,7 @@ def itzi_cloud_pull(cli_args):
             "  2. Specify parameters explicitly: --gisdb <path> --project <name> --mapset <name>\n"
             f"No metadata found for simulation {cli_args.fingerprint}"
         )
+        assert False, "Here to narrow down the type and please ty"
 
     msgr.message(f"Loading results to GRASS database using {source_description}")
     msgr.verbose(
@@ -534,13 +531,12 @@ def itzi_cloud_pull(cli_args):
     )
 
 
-def check_login() -> str | None:
+def check_login() -> str:
     from itzi.cloud.auth import get_email, is_logged
 
     email = get_email()
     if not is_logged(email):
-        msgr.message("Please log in first.")
-        return
+        msgr.fatal("Please log in first.")
     return email
 
 

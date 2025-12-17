@@ -15,7 +15,7 @@ GNU General Public License for more details.
 from __future__ import annotations
 from enum import Enum
 from pathlib import Path
-import importlib
+import importlib.util
 import os
 
 from itzi.data_containers import GrassParams

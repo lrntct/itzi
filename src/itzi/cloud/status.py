@@ -13,12 +13,12 @@ GNU General Public License for more details.
 """
 
 from __future__ import annotations
-from dataclasses import dataclass
 from datetime import datetime
 import json
 
 import itzi.messenger as msgr
 from itzi.cloud import urls
+from itzi.cloud.schemas import SimulationTaskSchema
 
 try:
     import requests
@@ -28,20 +28,6 @@ except ImportError:
         "'uv tool install itzi[cloud]' "
         "or 'pip install itzi[cloud]'"
     )
-
-
-@dataclass
-class SimulationTaskSchema:
-    """Schema for simulation task status."""
-
-    team: str
-    created_on: datetime
-    last_updated: datetime
-    fingerprint: str
-    status: str
-    progress: float
-    input_bytes: int
-    results_bytes: int
 
 
 def get_simulations_list(
@@ -142,13 +128,13 @@ def display_simulations_list(tasks: list[SimulationTaskSchema]) -> None:
         return
 
     # Helper function to format bytes
-    def format_bytes(bytes_val: int) -> str:
+    def format_bytes(bytes_val: float) -> str:
         if bytes_val == 0:
             return "0B"
         for unit in ["B", "KB", "MB", "GB"]:
             if bytes_val < 1024.0:
                 return f"{bytes_val:.1f}{unit}"
-            bytes_val /= 1024.0
+            bytes_val = bytes_val / 1024.0
         return f"{bytes_val:.1f}TB"
 
     # Helper function to format relative time

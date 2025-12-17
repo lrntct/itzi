@@ -13,6 +13,7 @@ GNU General Public License for more details.
 """
 
 from pathlib import Path
+from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict
 
@@ -38,5 +39,27 @@ class InputInfo(BaseModel):
     sim_config: SimulationConfig
     dataset_path: Path  # Path to the tgz file containing the zarr of input maps
     dataset_hash: str  # Base64 MD5 of the dataset
+    dataset_bytes: int
+    domain_info: DomainInfo
+
+
+class SimulationTaskSchema(BaseModel):
+    """Schema for simulation task status."""
+
+    team: str
+    created_on: datetime
+    last_updated: datetime
+    fingerprint: str
+    status: str
+    progress: float
+    input_bytes: int
+    results_bytes: int
+
+
+class SimulationRequestSchema(BaseModel):
+    fingerprint: str
+    estimated_timesteps: int
+    sim_config: SimulationConfig
+    dataset_hash: str
     dataset_bytes: int
     domain_info: DomainInfo

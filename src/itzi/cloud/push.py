@@ -13,7 +13,7 @@ GNU General Public License for more details.
 """
 
 from __future__ import annotations
-from typing import TYPE_CHECKING, Dict, Mapping, Tuple
+from typing import TYPE_CHECKING, Mapping
 from pathlib import Path
 import tempfile
 import json
@@ -30,7 +30,7 @@ from itzi.grass_session import GrassSessionManager
 from itzi.configreader import ConfigReader
 from itzi.const import TemporalType, DefaultValues
 from itzi.cloud import urls
-from itzi.cloud.models import InputInfo, DomainInfo
+from itzi.cloud.schemas import InputInfo, DomainInfo, SimulationRequestSchema
 from itzi.cloud.grass_utils import get_grass_params_from_env
 
 if TYPE_CHECKING:
@@ -103,7 +103,10 @@ def pack_input(sim_config: SimulationConfig, grass_params: GrassParams) -> Input
 
 
 def to_zarr(
-    cat_dict: Mapping, grass_params: GrassParams, sim_config: SimulationConfig, tempdir: Path
+    cat_dict: Mapping[str, dict[str, list[str]]],
+    grass_params: GrassParams,
+    sim_config: SimulationConfig,
+    tempdir: Path,
 ) -> None:
     """Read the itzi input from GRASS as an xr.Dataset.
     Select the correct time period.
@@ -120,30 +123,32 @@ def to_zarr(
 
     time_coords = []
     for coords_name, coords_values in ds.coords.items():
-        if "start_time" in coords_name:
+        if "start_time" in str(coords_name):
             time_coords.append(coords_name)
     time_slices = {tc: slice(start_time, end_time) for tc in time_coords}
     ds_select = ds.sel(**time_slices)
     ds_select.to_zarr(tempdir)
 
 
-def read_all_maps(cat_dict: Mapping, grass_params: GrassParams) -> xr.Dataset:
+def read_all_maps(
+    cat_dict: Mapping[str, dict[str, list[str]]], grass_params: GrassParams
+) -> xr.Dataset:
     dataset_list = []
     for mapset, map_dict in cat_dict.items():
         grass_db = Path(grass_params.grassdata)
         grass_project = grass_db / Path(grass_params.location)
         mapset_path = grass_project / Path(mapset)
-        ds = xr.open_dataset(mapset_path, **map_dict)
+        ds = xr.open_dataset(mapset_path, backend_kwargs=map_dict)
         dataset_list.append(ds)
     return xr.merge(dataset_list, compat="identical", join="exact")
 
 
 def list_input_maps(
-    input_map_names: Mapping, grass_interface: GrassInterface
-) -> Dict[Dict[str : [str, ...]]]:
+    input_map_names: Mapping[str, str | None], grass_interface: GrassInterface
+) -> dict[str, dict[str, list[str]]]:
     """Create a dict of map name lists categorized by mapset and type (raster or strds)"""
 
-    categorized = {}
+    categorized: dict[str, dict[str, list[str]]] = {}
     for map_key, map_name in input_map_names.items():
         if map_name:
             map_id = grass_interface.format_id(map_name)
@@ -165,7 +170,9 @@ def list_input_maps(
     return categorized
 
 
-def create_request(email: str, conf_file_path: str | Path) -> Tuple[Dict, Path, GrassParams]:
+def create_request(
+    email: str | None, conf_file_path: str | Path
+) -> tuple[SimulationRequestSchema, Path, GrassParams]:
     """Create a simulation request.
 
     Detects active GRASS session and merges with config file parameters.
@@ -207,29 +214,32 @@ def create_request(email: str, conf_file_path: str | Path) -> Tuple[Dict, Path, 
         domain_info=input_info.domain_info, sim_config=input_info.sim_config
     )
 
-    request_data = {
-        "fingerprint": request_fingerprint,
-        "estimated_timesteps": estimated_ts,
-        "sim_config": input_info.sim_config.model_dump(mode="json"),
-        "dataset_hash": input_info.dataset_hash,
-        "dataset_bytes": input_info.dataset_bytes,
-        "domain_info": input_info.domain_info.model_dump(),
-    }
+    request_data = SimulationRequestSchema(
+        fingerprint=request_fingerprint,
+        estimated_timesteps=estimated_ts,
+        sim_config=input_info.sim_config,
+        dataset_hash=input_info.dataset_hash,
+        dataset_bytes=input_info.dataset_bytes,
+        domain_info=input_info.domain_info,
+    )
     return request_data, input_info.dataset_path, grass_params
 
 
 def estimate_timesteps(domain_info: DomainInfo, sim_config: SimulationConfig) -> int:
-    """Estimate the number of time steps necessary."""
+    """Estimate the number of time steps necessary to complete the simulation."""
     from itzi.surfaceflow import SurfaceFlowSimulation
 
-    cfl = 0.5
-    maxh = 10  # metres
-    g = DefaultValues.G
-    min_dim = min(domain_info.ewres, domain_info.nsres)  # metres
+    min_dim: float = min(domain_info.ewres, domain_info.nsres)  # metres
 
-    dt = SurfaceFlowSimulation.dt_s(cfl, min_dim, g, maxh)
-    duration = (sim_config.end_time - sim_config.start_time).total_seconds()
-    return int(duration / dt)
+    time_step_duration: float = SurfaceFlowSimulation.dt_s(
+        min_dim=min_dim,
+        g=DefaultValues.G,
+        # Values to infer a conservative step duration
+        maxh=10,
+        cfl=0.5,
+    )
+    sim_duration: float = (sim_config.end_time - sim_config.start_time).total_seconds()
+    return int(sim_duration / time_step_duration)
 
 
 def blake2b_hex(file_path: Path, digest_size: int = 64) -> str:
@@ -253,12 +263,14 @@ def md5_base64(file_path: Path) -> str:
 
 
 def request_simulation(
-    session_token: str, metadata: Mapping, endpoint: str = urls.SIMULATIONS_ENDPOINT
-) -> Dict:
+    session_token: str,
+    metadata: SimulationRequestSchema,
+    endpoint: str = urls.SIMULATIONS_ENDPOINT,
+) -> dict[str, str]:
     """Send simulation metadata. Return the URL for upload."""
-    headers = {"X-Session-Token": session_token}
+    headers: dict[str, str] = {"X-Session-Token": session_token}
     with requests.Session() as session:
-        response = session.post(endpoint, json=metadata, headers=headers)
+        response = session.post(endpoint, json=metadata.model_dump(mode="json"), headers=headers)
     if response.status_code == 201:
         return json.loads(response._content)
     else:
@@ -266,7 +278,7 @@ def request_simulation(
 
 
 def upload_input(signed_url: str, payload: Path, content_md5: str, content_type: str) -> bool:
-    headers = {"content-md5": content_md5, "content-type": content_type}
+    headers: dict[str, str] = {"content-md5": content_md5, "content-type": content_type}
     with requests.Session() as session:
         with open(payload, mode="rb") as data:
             response = session.put(signed_url, data=data, headers=headers)

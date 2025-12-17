@@ -29,7 +29,7 @@ if TYPE_CHECKING:
 
 class GrassRasterOutputConfig(TypedDict):
     grass_interface: "GrassInterface"
-    out_map_names: Dict[str, str]
+    out_map_names: Dict[str, str | None]
     hmin: float
     temporal_type: TemporalType
 
@@ -75,7 +75,7 @@ class GrassRasterOutputProvider(RasterOutputProvider):
         self.record_counter[map_key] += 1
 
     def write_arrays(
-        self, array_dict: Dict[str, np.ndarray], sim_time: Union[datetime, timedelta]
+        self, array_dict: dict[str, np.ndarray], sim_time: datetime | timedelta
     ) -> None:
         for arr_key, arr in array_dict.items():
             if isinstance(arr, np.ndarray):

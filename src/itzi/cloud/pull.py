@@ -40,7 +40,7 @@ except ImportError:
 
 def get_simulation_results_url(
     session_token: str, fingerprint: str, endpoint: str = urls.SIMULATIONS_ENDPOINT
-) -> dict:
+) -> dict[str, str]:
     """Get the results download information for a simulation."""
     headers = {"X-Session-Token": session_token}
     results_url = f"{endpoint}/{fingerprint}/results"

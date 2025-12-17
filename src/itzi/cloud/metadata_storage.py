@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 import json
 import tempfile
 import shutil
-from typing import Dict, Any, Optional
+from typing import Any
 
 from platformdirs import user_data_dir
 
@@ -80,7 +80,7 @@ def _initialize_metadata_file(metadata_file: Path) -> None:
         json.dump(initial_data, f, indent=2)
 
 
-def _load_metadata_file(metadata_file: Path) -> Dict[str, Any]:
+def _load_metadata_file(metadata_file: Path) -> dict[str, Any]:
     """
     Load and parse metadata file.
 
@@ -204,7 +204,7 @@ def save_simulation_metadata(
         raise
 
 
-def load_simulation_metadata(fingerprint: str) -> Optional[GrassParams]:
+def load_simulation_metadata(fingerprint: str) -> GrassParams | None:
     """
     Load GRASS parameters for a simulation from local storage.
 
@@ -279,7 +279,7 @@ def load_simulation_metadata(fingerprint: str) -> Optional[GrassParams]:
     )
 
 
-def list_all_simulations() -> Dict[str, Dict[str, Any]]:
+def list_all_simulations() -> dict[str, dict[str, Any]]:
     """
     List all stored simulation metadata.
 
