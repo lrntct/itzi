@@ -102,7 +102,7 @@ def download_results(download_url: str, temp_dir: Path) -> Path:
     return temp_file
 
 
-def load_to_grass(temp_data_path: Path, grass_params: GrassParams) -> None:
+def load_to_grass(temp_data_path: Path, grass_params: GrassParams, overwrite: bool) -> None:
     """Load simulation results into GRASS database.
 
     Parameters
@@ -128,7 +128,7 @@ def load_to_grass(temp_data_path: Path, grass_params: GrassParams) -> None:
         # xarray_grass is imported here because it needs an active grass session
         from xarray_grass import to_grass
 
-        to_grass(ds_results, dims=dims_mapping)
+        to_grass(ds_results, dims=dims_mapping, overwrite=overwrite)
 
     msgr.message(f"Maximum water depth: {ds_results['itzi_demo_water_depth'].max().compute()}")
     msgr.message(
@@ -136,7 +136,9 @@ def load_to_grass(temp_data_path: Path, grass_params: GrassParams) -> None:
     )
 
 
-def pull_simulation_results(download_url: str, grass_params: GrassParams) -> None:
+def pull_simulation_results(
+    download_url: str, grass_params: GrassParams, overwrite: bool = False
+) -> None:
     """Pull simulation results from the cloud and load them into GRASS.
 
     Parameters
@@ -166,6 +168,6 @@ def pull_simulation_results(download_url: str, grass_params: GrassParams) -> Non
 
         # Load results into GRASS
         msgr.message("Loading results into GRASS...")
-        load_to_grass(extract_dir / Path("results.zarr"), grass_params)
+        load_to_grass(extract_dir / Path("results.zarr"), grass_params, overwrite=overwrite)
 
     msgr.message("Results successfully retrieved!")

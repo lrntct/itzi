@@ -529,7 +529,9 @@ def itzi_cloud_pull(cli_args):
     )
 
     # Pull and load the results
-    pull_simulation_results(download_url=results_info["download_url"], grass_params=grass_params)
+    pull_simulation_results(
+        download_url=results_info["download_url"], grass_params=grass_params, overwrite=cli_args.o
+    )
 
 
 def check_login() -> str | None:

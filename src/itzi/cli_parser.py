@@ -110,4 +110,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--mapset",
         help="Override name of the GRASS mapset to load the results into.",
     )
+    cloud_pull_parser.add_argument("-o", action="store_true", help="Overwrite files if exist.")
+
     return arg_parser
