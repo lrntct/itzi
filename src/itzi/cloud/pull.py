@@ -114,7 +114,6 @@ def load_to_grass(temp_data_path: Path, grass_params: GrassParams, overwrite: bo
     """
     ds_results = xr.open_zarr(temp_data_path)
     msgr.message("Results dataset summary:")
-    print(ds_results)
 
     # map time dimension of all strds
     time_mapping = {"start_time": "time"}
@@ -122,18 +121,12 @@ def load_to_grass(temp_data_path: Path, grass_params: GrassParams, overwrite: bo
     for var, da in ds_results.data_vars.items():
         if "time" in da.coords.keys():
             dims_mapping[var] = time_mapping
-    print(dims_mapping)
 
     with GrassSessionManager(grass_params):
         # xarray_grass is imported here because it needs an active grass session
         from xarray_grass import to_grass
 
         to_grass(ds_results, dims=dims_mapping, overwrite=overwrite)
-
-    msgr.message(f"Maximum water depth: {ds_results['itzi_demo_water_depth'].max().compute()}")
-    msgr.message(
-        f"Results will be loaded to: {grass_params.grassdata}/{grass_params.location}/{grass_params.mapset}"
-    )
 
 
 def pull_simulation_results(
