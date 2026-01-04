@@ -102,6 +102,60 @@ def pack_input(sim_config: SimulationConfig, grass_params: GrassParams) -> Input
     )
 
 
+def extract_dimension_names(ds: xr.Dataset) -> dict[str, dict[str, str]]:
+    """Extract dimension names for each variable in the dataset.
+
+    Returns a dictionary mapping variable names to their dimension mappings.
+    Assumes that:
+    - x and y dimensions are named 'x' and 'y'.
+    - Time dimension follows pattern 'start_time_<varname>'.
+    """
+    dimension_names: dict[str, dict[str, str]] = {}
+
+    for var_name in ds.data_vars:
+        da: xr.DataArray = ds[var_name]
+        var_dims: dict[str, str] = {"x": "x", "y": "y"}
+
+        # Check for time dimension
+        expected_time_dim = f"start_time_{var_name}"
+        if expected_time_dim in da.dims:
+            var_dims["time"] = expected_time_dim
+
+        dimension_names[str(var_name)] = var_dims
+
+    return dimension_names
+
+
+def validate_dimension_conventions(ds: xr.Dataset) -> None:
+    """Validate that the dataset follows expected dimension naming conventions.
+
+    Raises ValueError if:
+    - x or y coordinates are missing
+    - A 3D variable's time dimension doesn't follow the start_time_<varname> pattern
+
+    Parameters
+    ----------
+    ds : xr.Dataset
+        The dataset to validate.
+    """
+    # Check for x and y coordinates
+    if "x" not in ds.coords:
+        raise ValueError("Dataset missing expected 'x' coordinate")
+    if "y" not in ds.coords:
+        raise ValueError("Dataset missing expected 'y' coordinate")
+
+    # Validate time dimension naming for 3D variables
+    for var_name in ds.data_vars:
+        da: xr.DataArray = ds[var_name]
+        if len(da.dims) == 3:
+            expected_time_dim = f"start_time_{var_name}"
+            if expected_time_dim not in da.dims:
+                raise ValueError(
+                    f"3D variable '{var_name}' has unexpected dimensions {list(da.dims)}. "
+                    f"Expected time dimension '{expected_time_dim}'"
+                )
+
+
 def to_zarr(
     cat_dict: Mapping[str, dict[str, list[str]]],
     grass_params: GrassParams,
@@ -127,6 +181,14 @@ def to_zarr(
             time_coords.append(coords_name)
     time_slices = {tc: slice(start_time, end_time) for tc in time_coords}
     ds_select = ds.sel(**time_slices)
+
+    # Validate and extract dimension names
+    validate_dimension_conventions(ds_select)
+    dimension_names = extract_dimension_names(ds_select)
+
+    # Add dimension names to dataset attributes
+    ds_select.attrs["itzi_dimension_names"] = dimension_names
+
     ds_select.to_zarr(tempdir)
 
 
