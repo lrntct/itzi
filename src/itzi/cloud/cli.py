@@ -48,21 +48,20 @@ def itzi_cloud_login(cli_args) -> None:
 
 def itzi_cloud_push(cli_args) -> None:
     """Pack the input data, then submit a request to the cloud compute provider."""
-    from itzi.cloud.push import create_request, request_simulation, upload_input
+    from itzi.cloud.push import create_request, request_simulation, upload_input, confirm_upload
     from itzi.cloud.auth import get_token, check_login
     from itzi.cloud.metadata_storage import save_simulation_metadata
 
     os.environ["ITZI_VERBOSE"] = str(VerbosityLevel.MESSAGE)
 
     email = check_login()
+    session_token = get_token(email)
 
     for conf_file in cli_args.config_file:
         conf_file_name = Path(conf_file).name
         request_data, input_path, grass_params = create_request(email, conf_file)
         try:
-            response_dict = request_simulation(
-                session_token=get_token(email), metadata=request_data
-            )
+            response_dict = request_simulation(session_token=session_token, metadata=request_data)
             msgr.message(f"{conf_file_name}: Uploading input data...")
             upload_ok = upload_input(
                 signed_url=response_dict["upload_url"],
@@ -72,6 +71,8 @@ def itzi_cloud_push(cli_args) -> None:
             )
             if upload_ok:
                 msgr.message(f"{conf_file_name}: Uploading input data success!")
+                # Send upload confirmation to API
+                confirm_upload(session_token, request_data.fingerprint)
                 # Save metadata for later retrieval
                 try:
                     save_simulation_metadata(

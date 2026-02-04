@@ -345,7 +345,22 @@ def upload_input(signed_url: str, payload: Path, content_md5: str, content_type:
         with open(payload, mode="rb") as data:
             response = session.put(signed_url, data=data, headers=headers)
     if response.status_code == 200:
-        # return json.loads(response._content)
         return True
     else:
         raise RuntimeError(f"Something went wrong: {response.__dict__}")
+
+
+def confirm_upload(
+    session_token: str,
+    fingerprint: str,
+    endpoint: str = urls.SIMULATIONS_ENDPOINT,
+) -> bool:
+    """Send simulation metadata. Return the URL for upload."""
+    headers: dict[str, str] = {"X-Session-Token": session_token}
+    confirmation_url = f"{endpoint}/{fingerprint}/confirm-upload"
+    with requests.Session() as session:
+        response = session.post(confirmation_url, headers=headers)
+    if response.status_code == 202:
+        return True
+    else:
+        raise RuntimeError(f"Something went wrong: {response}")
