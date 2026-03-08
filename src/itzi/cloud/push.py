@@ -21,14 +21,14 @@ import uuid
 import tarfile
 import hashlib
 import base64
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 
 import numpy as np
 import requests
 
 from itzi.grass_session import GrassSessionManager
 from itzi.configreader import ConfigReader
-from itzi.const import TemporalType, DefaultValues
+from itzi.const import TemporalType
 from itzi.cloud import urls
 from itzi.cloud.schemas import InputInfo, DomainInfo, SimulationRequestSchema
 from itzi.cloud.grass_utils import get_grass_params_from_env
@@ -233,7 +233,7 @@ def list_input_maps(
 
 
 def create_request(
-    email: str | None, conf_file_path: str | Path
+    project_id: int, conf_file_path: str | Path, force: bool = False
 ) -> tuple[SimulationRequestSchema, Path, GrassParams]:
     """Create a simulation request.
 
@@ -241,8 +241,8 @@ def create_request(
 
     Parameters
     ----------
-    email : str
-        User email address.
+    project_id : int
+        Project ID.
     conf_file_path : str | Path
         Path to the configuration file.
 
@@ -262,55 +262,15 @@ def create_request(
 
     input_info = pack_input(sim_config, grass_params)
 
-    # Unique request identifier (email + datetime + config + input_hash) with blake2b and 8 bytes digest
-    config_json = json.dumps(input_info.sim_config.model_dump(mode="json"))
-    fingerprint_source = (
-        f"{email}{datetime.now(timezone.utc)}{config_json}{input_info.dataset_hash}"
-    )
-    request_fingerprint = hashlib.blake2b(
-        fingerprint_source.encode("utf-8"), digest_size=8
-    ).hexdigest()
-
-    # Estimation of Lattice updates
-    estimated_ts = estimate_timesteps(
-        domain_info=input_info.domain_info, sim_config=input_info.sim_config
-    )
-
     request_data = SimulationRequestSchema(
-        fingerprint=request_fingerprint,
-        estimated_timesteps=estimated_ts,
+        project_id=project_id,
+        force_rerun=force,
         sim_config=input_info.sim_config,
         dataset_hash=input_info.dataset_hash,
         dataset_bytes=input_info.dataset_bytes,
         domain_info=input_info.domain_info,
     )
     return request_data, input_info.dataset_path, grass_params
-
-
-def estimate_timesteps(domain_info: DomainInfo, sim_config: SimulationConfig) -> int:
-    """Estimate the number of time steps necessary to complete the simulation."""
-    from itzi.surfaceflow import SurfaceFlowSimulation
-
-    min_dim: float = min(domain_info.ewres, domain_info.nsres)  # metres
-
-    time_step_duration: float = SurfaceFlowSimulation.dt_s(
-        min_dim=min_dim,
-        g=DefaultValues.G,
-        # Values to infer a conservative step duration
-        maxh=10,
-        cfl=0.5,
-    )
-    sim_duration: float = (sim_config.end_time - sim_config.start_time).total_seconds()
-    return int(sim_duration / time_step_duration)
-
-
-def blake2b_hex(file_path: Path, digest_size: int = 64) -> str:
-    """Return the hex digest of a file."""
-    hasher = hashlib.blake2b(digest_size=digest_size)
-    with open(file_path, "rb") as f:
-        for chunk in iter(lambda: f.read(4096), b""):
-            hasher.update(chunk)
-    return hasher.hexdigest()
 
 
 def md5_base64(file_path: Path) -> str:
@@ -335,6 +295,12 @@ def request_simulation(
         response = session.post(endpoint, json=metadata.model_dump(mode="json"), headers=headers)
     if response.status_code == 201:
         return json.loads(response._content)
+    elif response.status_code == 409:
+        raise RuntimeError(
+            "An identical simulation is already in progress. "
+            f"Fingerprint: {response['existing_fingerprint']}, "
+            f"status: {response['status']}."
+        )
     else:
         raise RuntimeError(f"Something went wrong: {response}")
 

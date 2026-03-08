@@ -27,7 +27,7 @@ def itzi_cloud_login(cli_args) -> None:
 
     email = get_email(cli_args.email)
 
-    if cli_args.s:
+    if cli_args.status:
         # Check status
         if is_logged(email=email):
             msgr.message(f"{email} IS authenticated.")
@@ -35,7 +35,7 @@ def itzi_cloud_login(cli_args) -> None:
             msgr.message(f"{email} NOT authenticated.")
         return
 
-    if cli_args.o:
+    if cli_args.logout:
         # log out
         logout(email=email)
     else:
@@ -59,7 +59,9 @@ def itzi_cloud_push(cli_args) -> None:
 
     for conf_file in cli_args.config_file:
         conf_file_name = Path(conf_file).name
-        request_data, input_path, grass_params = create_request(email, conf_file)
+        request_data, input_path, grass_params = create_request(
+            cli_args.project, conf_file, force=cli_args.force
+        )
         try:
             response_dict = request_simulation(session_token=session_token, metadata=request_data)
             msgr.message(f"{conf_file_name}: Uploading input data...")
@@ -72,16 +74,16 @@ def itzi_cloud_push(cli_args) -> None:
             if upload_ok:
                 msgr.message(f"{conf_file_name}: Uploading input data success!")
                 # Send upload confirmation to API
-                confirm_upload(session_token, request_data.fingerprint)
+                confirm_upload(session_token, response_dict["fingerprint"])
                 # Save metadata for later retrieval
                 try:
                     save_simulation_metadata(
-                        fingerprint=request_data.fingerprint,
+                        fingerprint=response_dict["fingerprint"],
                         email=email,
                         config_file=str(conf_file),
                         grass_params=grass_params,
                     )
-                    msgr.debug(f"Saved metadata for simulation {request_data.fingerprint}")
+                    msgr.debug(f"Saved metadata for simulation {response_dict['fingerprint']}")
                 except Exception as e:
                     msgr.warning(f"Failed to save metadata: {e}")
         except Exception as e:
@@ -182,5 +184,7 @@ def itzi_cloud_pull(cli_args) -> None:
 
     # Pull and load the results
     pull_simulation_results(
-        download_url=results_info["download_url"], grass_params=grass_params, overwrite=cli_args.o
+        download_url=results_info["download_url"],
+        grass_params=grass_params,
+        overwrite=cli_args.overwrite,
     )

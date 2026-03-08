@@ -56,7 +56,7 @@ class GrassRasterInputProvider(RasterInputProvider):
         )
 
     def get_map_lists(
-        self, map_names: Mapping[str, str |]
+        self, map_names: Mapping[str, str | None]
     ) -> Mapping[str, list[GrassInterface.MapData] | None]:
         """Read maps names from GIS.
         input map_names is a dictionary of maps/STDS names

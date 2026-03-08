@@ -70,12 +70,24 @@ def build_parser() -> argparse.ArgumentParser:
     cloud_login_parser = cloud_subparser.add_parser("login", help="Login to the cloud provider.")
     cloud_login_parser.add_argument("--email", help="Account email.")
     cloud_login_parser.add_argument("--password", help="Account password.")
-    cloud_login_parser.add_argument("-o", action="store_true", help="Log out from session.")
-    cloud_login_parser.add_argument("-s", action="store_true", help="Get session status.")
+    cloud_login_parser.add_argument(
+        "-o", "--logout", action="store_true", help="Log out from the current session."
+    )
+    cloud_login_parser.add_argument(
+        "-s", "--status", action="store_true", help="Get session status."
+    )
 
     cloud_push_parser = cloud_subparser.add_parser(
         "push", help="submit a simulation to run in the cloud"
     )
+    cloud_push_parser.add_argument(
+        "-p",
+        "--project",
+        type=int,
+        metavar="ID",
+        help="ID of the cloud project to attach the simulation to.",
+    )
+    cloud_push_parser.add_argument("-f", "--force", action="store_true", help="Force re-run.")
     cloud_push_parser.add_argument(
         "config_file",
         nargs="+",

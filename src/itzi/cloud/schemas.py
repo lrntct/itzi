@@ -44,7 +44,7 @@ class InputInfo(BaseModel):
 
 
 class SimulationTaskSchema(BaseModel):
-    """Schema for simulation task status."""
+    """Schema for retrieving simulation task status."""
 
     team: str
     created_on: datetime
@@ -57,8 +57,10 @@ class SimulationTaskSchema(BaseModel):
 
 
 class SimulationRequestSchema(BaseModel):
-    fingerprint: str
-    estimated_timesteps: int
+    """Schema for requesting a simulation."""
+
+    project_id: int
+    force_rerun: bool = False
     sim_config: SimulationConfig
     dataset_hash: str
     dataset_bytes: int
