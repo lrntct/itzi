@@ -38,10 +38,11 @@ def check_login() -> str:
     return email
 
 
-def login(email: str, password: str, url: str = urls.LOGIN_ENDPOINT) -> None:
+def login(email: str, password: str, url: str | None = None) -> None:
     """Log into the cloud service.
     Store session token into the system keyring.
     """
+    url = url or urls.get_login_endpoint()
     data = {
         "email": str(email),
         "password": str(password),
@@ -81,8 +82,9 @@ def get_default_email() -> None | str:
     return keyring.get_password("itzi_cloud", "default_email")
 
 
-def logout(email: str, url: str = urls.SESSION_ENDPOINT) -> None:
+def logout(email: str, url: str | None = None) -> None:
     """Logout from the service. Clear stored token."""
+    url = url or urls.get_session_endpoint()
     # 1. Log out
     try:
         token = get_token(email)
@@ -103,8 +105,9 @@ def logout(email: str, url: str = urls.SESSION_ENDPOINT) -> None:
         pass  # Already deleted or never existed
 
 
-def is_logged(email: str, url: str = urls.SESSION_ENDPOINT) -> bool:
+def is_logged(email: str, url: str | None = None) -> bool:
     """Get authentication status."""
+    url = url or urls.get_session_endpoint()
     try:
         token = get_token(email)
     except Exception:

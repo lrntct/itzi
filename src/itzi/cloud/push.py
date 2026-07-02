@@ -287,9 +287,10 @@ def md5_base64(file_path: Path) -> str:
 def request_simulation(
     session_token: str,
     metadata: SimulationRequestSchema,
-    endpoint: str = urls.SIMULATIONS_ENDPOINT,
+    endpoint: str | None = None,
 ) -> dict[str, str]:
     """Send simulation metadata. Return the URL for upload."""
+    endpoint = endpoint or urls.get_simulations_endpoint()
     headers: dict[str, str] = {"X-Session-Token": session_token}
     with requests.Session() as session:
         response = session.post(endpoint, json=metadata.model_dump(mode="json"), headers=headers)
@@ -319,9 +320,10 @@ def upload_input(signed_url: str, payload: Path, content_md5: str, content_type:
 def confirm_upload(
     session_token: str,
     fingerprint: str,
-    endpoint: str = urls.SIMULATIONS_ENDPOINT,
+    endpoint: str | None = None,
 ) -> bool:
     """Send simulation metadata. Return the URL for upload."""
+    endpoint = endpoint or urls.get_simulations_endpoint()
     headers: dict[str, str] = {"X-Session-Token": session_token}
     confirmation_url = f"{endpoint}/{fingerprint}/confirm-upload"
     with requests.Session() as session:

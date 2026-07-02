@@ -12,8 +12,33 @@ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 GNU General Public License for more details.
 """
 
-API_BASE = "http://localhost:8000"
+from __future__ import annotations
 
-LOGIN_ENDPOINT = f"{API_BASE}/_allauth/app/v1/auth/login"
-SESSION_ENDPOINT = f"{API_BASE}/_allauth/app/v1/auth/session"
-SIMULATIONS_ENDPOINT = f"{API_BASE}/itzi-api/simulations"
+import os
+
+
+DEFAULT_API_BASE = "http://localhost:8000"
+API_BASE_ENV_VAR = "ITZI_CLOUD_API_BASE"
+
+
+def get_api_base() -> str:
+    return os.environ.get(API_BASE_ENV_VAR, DEFAULT_API_BASE).rstrip("/")
+
+
+def get_login_endpoint() -> str:
+    return f"{get_api_base()}/_allauth/app/v1/auth/login"
+
+
+def get_session_endpoint() -> str:
+    return f"{get_api_base()}/_allauth/app/v1/auth/session"
+
+
+def get_simulations_endpoint() -> str:
+    return f"{get_api_base()}/itzi-api/simulations"
+
+
+# Backward-compatible module attributes for callers that only need the default values.
+API_BASE = get_api_base()
+LOGIN_ENDPOINT = get_login_endpoint()
+SESSION_ENDPOINT = get_session_endpoint()
+SIMULATIONS_ENDPOINT = get_simulations_endpoint()

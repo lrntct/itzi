@@ -30,9 +30,7 @@ except ImportError:
     )
 
 
-def get_simulations_list(
-    session_token: str, url: str = urls.SIMULATIONS_ENDPOINT
-) -> list[SimulationTaskSchema]:
+def get_simulations_list(session_token: str, url: str | None = None) -> list[SimulationTaskSchema]:
     """Get the status of all simulations for the authenticated user.
 
     Args:
@@ -42,6 +40,7 @@ def get_simulations_list(
     Returns:
         List of SimulationTaskSchema objects containing simulation status
     """
+    url = url or urls.get_simulations_endpoint()
     headers = {"X-Session-Token": session_token}
 
     with requests.Session() as session:
@@ -75,7 +74,7 @@ def get_simulations_list(
 
 
 def get_simulation(
-    session_token: str, fingerprint: str, url: str = urls.SIMULATIONS_ENDPOINT
+    session_token: str, fingerprint: str, url: str | None = None
 ) -> SimulationTaskSchema:
     """Get the status of a single simulation by fingerprint.
 
@@ -87,6 +86,7 @@ def get_simulation(
     Returns:
         SimulationTaskSchema object containing simulation status
     """
+    url = url or urls.get_simulations_endpoint()
     headers = {"X-Session-Token": session_token}
     simulation_url = f"{url}/{fingerprint}"
 
