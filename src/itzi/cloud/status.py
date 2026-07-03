@@ -137,24 +137,12 @@ def display_simulations_list(tasks: list[SimulationTaskSchema]) -> None:
             bytes_val = bytes_val / 1024.0
         return f"{bytes_val:.1f}TB"
 
-    # Helper function to format relative time
-    def format_time_ago(dt: datetime) -> str:
-        now = datetime.now(dt.tzinfo) if dt.tzinfo else datetime.now()
-        delta = now - dt
-
-        if delta.days > 0:
-            return f"{delta.days} days ago"
-        elif delta.seconds >= 3600:
-            hours = delta.seconds // 3600
-            return f"{hours} hours ago"
-        elif delta.seconds >= 60:
-            minutes = delta.seconds // 60
-            return f"{minutes} minutes ago"
-        else:
-            return "just now"
+    # Display timestamps in the user's local timezone.
+    def format_local_datetime(dt: datetime) -> str:
+        return dt.astimezone().strftime("%Y-%m-%d %H:%M:%S")
 
     # Print header
-    header = f"{'FINGERPRINT':<17} {'STATUS':<12} {'PROGRESS':<10} {'CREATED':<18} {'UPDATED':<18} {'TEAM':<15} {'INPUT SIZE':<12} {'RESULTS SIZE':<10}"
+    header = f"{'FINGERPRINT':<17} {'STATUS':<12} {'PROGRESS':<10} {'CREATED':<20} {'UPDATED':<20} {'TEAM':<15} {'INPUT SIZE':<12} {'RESULTS SIZE':<10}"
     msgr.message(header)
 
     # Print each task
@@ -162,11 +150,11 @@ def display_simulations_list(tasks: list[SimulationTaskSchema]) -> None:
         fingerprint = task.fingerprint
         status = task.status[:11]  # Truncate if needed
         progress = f"{task.progress / 10:.1f}%"  # received progress is in per mille
-        created = format_time_ago(task.created_on)
-        updated = format_time_ago(task.last_updated)
+        created = format_local_datetime(task.created_on)
+        updated = format_local_datetime(task.last_updated)
         team = task.team[:14] if task.team else "-"
         input_size = format_bytes(task.input_bytes)
         results_size = format_bytes(task.results_bytes)
 
-        row = f"{fingerprint:<17} {status:<12} {progress:<10} {created:<18} {updated:<18} {team:<15} {input_size:<12} {results_size:<10}"
+        row = f"{fingerprint:<17} {status:<12} {progress:<10} {created:<20} {updated:<20} {team:<15} {input_size:<12} {results_size:<10}"
         msgr.message(row)
