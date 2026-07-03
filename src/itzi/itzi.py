@@ -60,7 +60,7 @@ if TYPE_CHECKING:
     from itzi.simulation import Simulation
 
 
-def main(argv=None):
+def main(argv: list[str] | None = None) -> None:
     """argv: alternative CLI arguments, used for testing (default to sys.argv)"""
     args = build_parser().parse_args(argv)
 
@@ -70,6 +70,7 @@ def main(argv=None):
     }
 
     cloud_command_mapper: dict[str, Callable] = {
+        "help": cli_parser.print_cloud_help,
         "login": itzi_cloud_login,
         "push": itzi_cloud_push,
         "status": itzi_cloud_status,
@@ -77,7 +78,7 @@ def main(argv=None):
     }
 
     if args.command == "cloud":
-        cloud_command_mapper[args.cloud_command](args)
+        cloud_command_mapper[args.cloud_handler](args)
         return
 
     command_mapper[args.command](args)

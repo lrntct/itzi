@@ -67,6 +67,22 @@ def test_cloud_pull_parser_accepts_overrides_and_overwrite():
     assert args.overwrite is True
 
 
+def test_main_prints_cloud_help_without_subcommand(capsys):
+    args = build_parser().parse_args(["cloud"])
+
+    assert args.command == "cloud"
+    assert args.cloud_command is None
+    assert args.cloud_handler == "help"
+
+    assert main(["cloud"]) is None
+
+    captured = capsys.readouterr()
+    assert "usage:" in captured.out
+    assert " cloud [-h]" in captured.out
+    assert "{login,push,status,pull}" in captured.out
+    assert captured.err == ""
+
+
 @pytest.mark.parametrize(
     ("argv", "expected_handler"),
     [

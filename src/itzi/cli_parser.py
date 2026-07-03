@@ -32,6 +32,87 @@ def parse_resume_from(arg_value: str) -> tuple[str | None, str]:
     return key, path
 
 
+def add_cloud_subcommands(cloud_parser: argparse.ArgumentParser) -> None:
+    cloud_subparser = cloud_parser.add_subparsers(dest="cloud_command")
+
+    cloud_login_parser = cloud_subparser.add_parser("login", help="Login to the cloud provider.")
+    cloud_login_parser.set_defaults(cloud_handler="login")
+    cloud_login_parser.add_argument("--email", help="Account email.")
+    cloud_login_parser.add_argument("--password", help="Account password.")
+    cloud_login_parser.add_argument(
+        "-o", "--logout", action="store_true", help="Log out from the current session."
+    )
+    cloud_login_parser.add_argument(
+        "-s", "--status", action="store_true", help="Get session status."
+    )
+
+    cloud_push_parser = cloud_subparser.add_parser(
+        "push", help="submit a simulation to run in the cloud"
+    )
+    cloud_push_parser.set_defaults(cloud_handler="push")
+    cloud_push_parser.add_argument(
+        "-p",
+        "--project",
+        type=int,
+        required=True,
+        metavar="ID",
+        help="ID of the cloud project to attach the simulation to.",
+    )
+    cloud_push_parser.add_argument("-f", "--force", action="store_true", help="Force re-run.")
+    cloud_push_parser.add_argument(
+        "config_file",
+        nargs="+",
+        help=("An Itzï configuration file (if several given, run in batch mode.)"),
+    )
+
+    cloud_status_parser = cloud_subparser.add_parser(
+        "status", help="Display status of submitted cloud simulations."
+    )
+    cloud_status_parser.set_defaults(cloud_handler="status")
+    cloud_status_parser.add_argument(
+        "fingerprint",
+        nargs="?",
+        help="Optional simulation fingerprint to query a specific simulation.",
+    )
+
+    cloud_pull_parser = cloud_subparser.add_parser(
+        "pull", help="Pull results from a complete cloud simulation."
+    )
+    cloud_pull_parser.set_defaults(cloud_handler="pull")
+    cloud_pull_parser.add_argument(
+        "fingerprint",
+        help="Simulation fingerprint to download results from.",
+    )
+    cloud_pull_parser.add_argument(
+        "--gisdb",
+        help="Override disk location of the GRASS GIS database to load the results into.",
+    )
+    cloud_pull_parser.add_argument(
+        "--project",
+        help="Override name of the GRASS project to load the results into.",
+    )
+    cloud_pull_parser.add_argument(
+        "--mapset",
+        help="Override name of the GRASS mapset to load the results into.",
+    )
+    cloud_pull_parser.add_argument(
+        "-o", dest="overwrite", action="store_true", help="Overwrite files if exist."
+    )
+
+
+def build_cloud_parser(prog: str | None = None) -> argparse.ArgumentParser:
+    cloud_parser = argparse.ArgumentParser(
+        prog=prog,
+        description="Run and manage cloud simulations.",
+    )
+    add_cloud_subcommands(cloud_parser)
+    return cloud_parser
+
+
+def print_cloud_help(_cli_args: argparse.Namespace | None = None) -> None:
+    build_cloud_parser(prog=f"{build_parser().prog} cloud").print_help()
+
+
 def build_parser() -> argparse.ArgumentParser:
     arg_parser = argparse.ArgumentParser(description=DESCR)
     subparsers = arg_parser.add_subparsers(dest="command", required=True)
@@ -65,66 +146,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # Cloud functions subparser
     cloud_parser = subparsers.add_parser("cloud", help="Run and manage cloud simulations.")
-    cloud_subparser = cloud_parser.add_subparsers(dest="cloud_command", required=True)
-
-    cloud_login_parser = cloud_subparser.add_parser("login", help="Login to the cloud provider.")
-    cloud_login_parser.add_argument("--email", help="Account email.")
-    cloud_login_parser.add_argument("--password", help="Account password.")
-    cloud_login_parser.add_argument(
-        "-o", "--logout", action="store_true", help="Log out from the current session."
-    )
-    cloud_login_parser.add_argument(
-        "-s", "--status", action="store_true", help="Get session status."
-    )
-
-    cloud_push_parser = cloud_subparser.add_parser(
-        "push", help="submit a simulation to run in the cloud"
-    )
-    cloud_push_parser.add_argument(
-        "-p",
-        "--project",
-        type=int,
-        required=True,
-        metavar="ID",
-        help="ID of the cloud project to attach the simulation to.",
-    )
-    cloud_push_parser.add_argument("-f", "--force", action="store_true", help="Force re-run.")
-    cloud_push_parser.add_argument(
-        "config_file",
-        nargs="+",
-        help=("An Itzï configuration file (if several given, run in batch mode.)"),
-    )
-
-    cloud_status_parser = cloud_subparser.add_parser(
-        "status", help="Display status of submitted cloud simulations."
-    )
-    cloud_status_parser.add_argument(
-        "fingerprint",
-        nargs="?",
-        help="Optional simulation fingerprint to query a specific simulation.",
-    )
-
-    cloud_pull_parser = cloud_subparser.add_parser(
-        "pull", help="Pull results from a complete cloud simulation."
-    )
-    cloud_pull_parser.add_argument(
-        "fingerprint",
-        help="Simulation fingerprint to download results from.",
-    )
-    cloud_pull_parser.add_argument(
-        "--gisdb",
-        help="Override disk location of the GRASS GIS database to load the results into.",
-    )
-    cloud_pull_parser.add_argument(
-        "--project",
-        help="Override name of the GRASS project to load the results into.",
-    )
-    cloud_pull_parser.add_argument(
-        "--mapset",
-        help="Override name of the GRASS mapset to load the results into.",
-    )
-    cloud_pull_parser.add_argument(
-        "-o", dest="overwrite", action="store_true", help="Overwrite files if exist."
-    )
+    cloud_parser.set_defaults(cloud_handler="help")
+    add_cloud_subcommands(cloud_parser)
 
     return arg_parser
