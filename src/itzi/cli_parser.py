@@ -84,6 +84,7 @@ def build_parser() -> argparse.ArgumentParser:
         "-p",
         "--project",
         type=int,
+        required=True,
         metavar="ID",
         help="ID of the cloud project to attach the simulation to.",
     )

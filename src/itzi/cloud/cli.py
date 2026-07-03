@@ -59,6 +59,9 @@ def itzi_cloud_push(cli_args) -> None:
 
     os.environ["ITZI_VERBOSE"] = str(VerbosityLevel.MESSAGE)
 
+    if cli_args.project is None:
+        msgr.fatal("Cloud project ID is required. Use --project <id>.")
+
     email = check_login()
     session_token = get_token(email)
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+from dataclasses import dataclass
 import hashlib
 import io
 import json
@@ -21,6 +22,7 @@ from itzi.cloud.cli import itzi_cloud_login, itzi_cloud_pull, itzi_cloud_push, i
 from itzi.cloud.schemas import DomainInfo, SimulationRequestSchema
 from itzi.const import TemporalType
 from itzi.data_containers import GrassParams, SimulationConfig, SurfaceFlowParameters
+from itzi.itzi_error import ItziFatal
 
 
 def _build_tar_archive(root_name: str, files: dict[str, bytes]) -> bytes:
@@ -69,6 +71,8 @@ class FakeCloudState:
         self.download_archives: dict[str, bytes] = {}
         self.created_requests: list[dict[str, Any]] = []
         self.confirmed_fingerprints: list[str] = []
+        self.next_simulation_creation_error: tuple[int, dict[str, Any]] | None = None
+        self.results_lookup_errors: dict[str, tuple[int, dict[str, Any]]] = {}
 
     def create_simulation(self, metadata: dict[str, Any], base_url: str) -> dict[str, str]:
         fingerprint = f"fp-{len(self.simulations) + 1:03d}"
@@ -139,6 +143,11 @@ class FakeCloudRequestHandler(BaseHTTPRequestHandler):
             if not self._require_token():
                 return
             metadata = self._read_json()
+            if self.server.state.next_simulation_creation_error is not None:
+                status_code, payload = self.server.state.next_simulation_creation_error
+                self.server.state.next_simulation_creation_error = None
+                self._send_json(status_code, payload)
+                return
             response = self.server.state.create_simulation(metadata, self.server.base_url)
             self._send_json(201, response)
             return
@@ -173,6 +182,10 @@ class FakeCloudRequestHandler(BaseHTTPRequestHandler):
         fingerprint = self._match_simulation_subresource(path, "results")
         if fingerprint is not None:
             if not self._require_token():
+                return
+            if fingerprint in self.server.state.results_lookup_errors:
+                status_code, payload = self.server.state.results_lookup_errors[fingerprint]
+                self._send_json(status_code, payload)
                 return
             self._send_json(
                 200,
@@ -274,28 +287,22 @@ class FakeCloudRequestHandler(BaseHTTPRequestHandler):
             self.wfile.write(body)
 
 
-@pytest.fixture
-def fake_cloud_server() -> FakeCloudServer:
-    state = FakeCloudState()
-    server = FakeCloudServer(state)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-
-    try:
-        yield server
-    finally:
-        server.shutdown()
-        thread.join(timeout=5)
-        server.server_close()
+@dataclass(frozen=True)
+class CloudTestContext:
+    metadata_storage: Any
+    pull: Any
+    push: Any
+    grass_params: GrassParams
+    input_archive: Path
+    request_data: SimulationRequestSchema
 
 
-@pytest.mark.cloud
-def test_cloud_roundtrip_with_fake_provider(
+def _configure_cloud_test_environment(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     fake_cloud_server: FakeCloudServer,
-) -> None:
-    from itzi.cloud import auth, grass_utils, metadata_storage, pull, push, status
+) -> CloudTestContext:
+    from itzi.cloud import auth, grass_utils, metadata_storage, pull, push
 
     monkeypatch.setenv("ITZI_CLOUD_API_BASE", fake_cloud_server.base_url)
 
@@ -344,6 +351,41 @@ def test_cloud_roundtrip_with_fake_provider(
         lambda project, conf_file, force: (request_data, input_archive, grass_params),
     )
 
+    return CloudTestContext(
+        metadata_storage=metadata_storage,
+        pull=pull,
+        push=push,
+        grass_params=grass_params,
+        input_archive=input_archive,
+        request_data=request_data,
+    )
+
+
+@pytest.fixture
+def fake_cloud_server() -> FakeCloudServer:
+    state = FakeCloudState()
+    server = FakeCloudServer(state)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        yield server
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+@pytest.mark.cloud
+def test_cloud_roundtrip_with_fake_provider(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    fake_cloud_server: FakeCloudServer,
+) -> None:
+    from itzi.cloud import status
+
+    ctx = _configure_cloud_test_environment(monkeypatch, tmp_path, fake_cloud_server)
+
     loaded_results: list[dict[str, Any]] = []
 
     def record_loaded_results(
@@ -359,7 +401,7 @@ def test_cloud_roundtrip_with_fake_provider(
             }
         )
 
-    monkeypatch.setattr(pull, "load_to_grass", record_loaded_results)
+    monkeypatch.setattr(ctx.pull, "load_to_grass", record_loaded_results)
 
     status_messages: list[str] = []
     monkeypatch.setattr(status.msgr, "message", status_messages.append)
@@ -375,18 +417,18 @@ def test_cloud_roundtrip_with_fake_provider(
 
     itzi_cloud_push(argparse.Namespace(project=42, force=True, config_file=["sim.ini"]))
 
-    metadata_file = metadata_storage.get_metadata_file_path()
+    metadata_file = ctx.metadata_storage.get_metadata_file_path()
     stored_metadata = json.loads(metadata_file.read_text())
     assert stored_metadata["simulations"]["fp-001"]["grass_params"] == {
-        "grassdata": str(grassdata),
+        "grassdata": str(ctx.grass_params.grassdata),
         "location": "project",
         "mapset": "mapset",
         "grass_bin": None,
     }
-    assert fake_cloud_server.state.created_requests == [request_data.model_dump(mode="json")]
-    assert fake_cloud_server.state.uploaded_payloads["fp-001"] == input_archive.read_bytes()
+    assert fake_cloud_server.state.created_requests == [ctx.request_data.model_dump(mode="json")]
+    assert fake_cloud_server.state.uploaded_payloads["fp-001"] == ctx.input_archive.read_bytes()
     assert fake_cloud_server.state.upload_headers["fp-001"] == {
-        "content-md5": dataset_hash,
+        "content-md5": ctx.request_data.dataset_hash,
         "content-type": "application/gzip",
     }
     assert fake_cloud_server.state.confirmed_fingerprints == ["fp-001"]
@@ -410,5 +452,101 @@ def test_cloud_roundtrip_with_fake_provider(
     assert len(loaded_results) == 1
     assert loaded_results[0]["exists"] is True
     assert loaded_results[0]["metadata"] == '{"fingerprint": "fp-001"}'
-    assert loaded_results[0]["grass_params"] == grass_params
+    assert loaded_results[0]["grass_params"] == ctx.grass_params
     assert loaded_results[0]["overwrite"] is True
+
+
+@pytest.mark.cloud
+def test_cloud_push_warns_on_conflicting_simulation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    fake_cloud_server: FakeCloudServer,
+) -> None:
+    ctx = _configure_cloud_test_environment(monkeypatch, tmp_path, fake_cloud_server)
+    fake_cloud_server.state.next_simulation_creation_error = (
+        409,
+        {"existing_fingerprint": "fp-existing", "status": "running"},
+    )
+
+    warnings: list[str] = []
+    monkeypatch.setattr("itzi.cloud.cli.msgr.warning", warnings.append)
+
+    itzi_cloud_login(
+        argparse.Namespace(
+            email="user@example.com",
+            password="secret",
+            logout=False,
+            status=False,
+        )
+    )
+
+    itzi_cloud_push(argparse.Namespace(project=42, force=True, config_file=["sim.ini"]))
+
+    assert warnings == [
+        "sim.ini: Error during cloud submission: An identical simulation is already in progress. "
+        "Fingerprint: fp-existing, status: running."
+    ]
+    assert fake_cloud_server.state.created_requests == []
+    assert fake_cloud_server.state.uploaded_payloads == {}
+    assert fake_cloud_server.state.confirmed_fingerprints == []
+    assert ctx.metadata_storage.list_all_simulations() == {}
+
+
+@pytest.mark.cloud
+def test_cloud_pull_surfaces_api_detail_when_results_are_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    fake_cloud_server: FakeCloudServer,
+) -> None:
+    ctx = _configure_cloud_test_environment(monkeypatch, tmp_path, fake_cloud_server)
+    monkeypatch.setattr(ctx.pull, "load_to_grass", lambda *args, **kwargs: pytest.fail())
+
+    itzi_cloud_login(
+        argparse.Namespace(
+            email="user@example.com",
+            password="secret",
+            logout=False,
+            status=False,
+        )
+    )
+    itzi_cloud_push(argparse.Namespace(project=42, force=True, config_file=["sim.ini"]))
+
+    fake_cloud_server.state.results_lookup_errors["fp-001"] = (
+        409,
+        {"detail": "Results are not available yet"},
+    )
+
+    with pytest.raises(ItziFatal, match="Results are not available yet"):
+        itzi_cloud_pull(
+            argparse.Namespace(
+                fingerprint="fp-001",
+                overwrite=False,
+                gisdb=None,
+                project=None,
+                mapset=None,
+            )
+        )
+
+
+@pytest.mark.cloud
+def test_cloud_status_requires_an_active_session(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    fake_cloud_server: FakeCloudServer,
+) -> None:
+    _configure_cloud_test_environment(monkeypatch, tmp_path, fake_cloud_server)
+
+    itzi_cloud_login(
+        argparse.Namespace(
+            email="user@example.com",
+            password="secret",
+            logout=False,
+            status=False,
+        )
+    )
+
+    fake_cloud_server.state.tokens_by_email.clear()
+    fake_cloud_server.state.email_by_token.clear()
+
+    with pytest.raises(ItziFatal, match="Please log in first"):
+        itzi_cloud_status(argparse.Namespace(fingerprint=None))

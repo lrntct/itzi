@@ -242,7 +242,7 @@ def create_request(
     Parameters
     ----------
     project_id : int
-        Project ID.
+        Cloud project ID.
     conf_file_path : str | Path
         Path to the configuration file.
 
@@ -297,10 +297,11 @@ def request_simulation(
     if response.status_code == 201:
         return json.loads(response._content)
     elif response.status_code == 409:
+        response_data = json.loads(response.text)
         raise RuntimeError(
             "An identical simulation is already in progress. "
-            f"Fingerprint: {response['existing_fingerprint']}, "
-            f"status: {response['status']}."
+            f"Fingerprint: {response_data['existing_fingerprint']}, "
+            f"status: {response_data['status']}."
         )
     else:
         raise RuntimeError(f"Something went wrong: {response}")

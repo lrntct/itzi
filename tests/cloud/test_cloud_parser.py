@@ -29,6 +29,11 @@ def test_cloud_push_parser_accepts_batch_and_flags():
     assert args.config_file == ["a.ini", "b.ini"]
 
 
+def test_cloud_push_parser_requires_project_id():
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["cloud", "push", "sim.ini"])
+
+
 def test_cloud_status_parser_accepts_optional_fingerprint():
     args = build_parser().parse_args(["cloud", "status", "fp-123"])
 
@@ -66,7 +71,7 @@ def test_cloud_pull_parser_accepts_overrides_and_overwrite():
     ("argv", "expected_handler"),
     [
         (["cloud", "login"], "itzi_cloud_login"),
-        (["cloud", "push", "sim.ini"], "itzi_cloud_push"),
+        (["cloud", "push", "-p", "42", "sim.ini"], "itzi_cloud_push"),
         (["cloud", "status"], "itzi_cloud_status"),
         (["cloud", "pull", "fp-123"], "itzi_cloud_pull"),
     ],

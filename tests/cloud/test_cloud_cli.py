@@ -222,7 +222,7 @@ def test_itzi_cloud_push_warns_when_metadata_save_fails(monkeypatch):
     )
     monkeypatch.setattr("itzi.cloud.cli.msgr.warning", warnings.append)
 
-    itzi_cloud_push(argparse.Namespace(project=None, force=False, config_file=["sim.ini"]))
+    itzi_cloud_push(argparse.Namespace(project=42, force=False, config_file=["sim.ini"]))
 
     assert warnings == ["Failed to save metadata: boom"]
 
@@ -258,9 +258,25 @@ def test_itzi_cloud_push_warns_when_submission_fails(monkeypatch):
     )
     monkeypatch.setattr("itzi.cloud.cli.msgr.warning", warnings.append)
 
-    itzi_cloud_push(argparse.Namespace(project=None, force=False, config_file=["sim.ini"]))
+    itzi_cloud_push(argparse.Namespace(project=42, force=False, config_file=["sim.ini"]))
 
     assert warnings == ["sim.ini: Error during cloud submission: boom"]
+
+
+def test_itzi_cloud_push_requires_project_id(monkeypatch):
+    install_stub_module(
+        monkeypatch,
+        "itzi.cloud.auth",
+        check_login=lambda: pytest.fail("login should not be checked"),
+        get_token=lambda email: pytest.fail("token should not be requested"),
+    )
+    monkeypatch.setattr(
+        "itzi.cloud.cli.msgr.fatal",
+        lambda message: (_ for _ in ()).throw(ItziFatal(message)),
+    )
+
+    with pytest.raises(ItziFatal, match="Cloud project ID is required"):
+        itzi_cloud_push(argparse.Namespace(project=None, force=False, config_file=["sim.ini"]))
 
 
 def test_itzi_cloud_status_displays_single_simulation(monkeypatch):
