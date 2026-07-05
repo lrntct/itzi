@@ -19,6 +19,7 @@ import tempfile
 import json
 import uuid
 import tarfile
+import gzip
 import hashlib
 import base64
 from datetime import timedelta
@@ -45,6 +46,43 @@ except ImportError:
         "'uv tool install itzi[cloud]' "
         "or 'pip install itzi[cloud]'"
     )
+
+
+def _normalize_tar_info(tar_info: tarfile.TarInfo) -> tarfile.TarInfo:
+    """Normalize tar member metadata so identical inputs produce identical archives."""
+
+    tar_info.mtime = 0
+    tar_info.uid = 0
+    tar_info.gid = 0
+    tar_info.uname = ""
+    tar_info.gname = ""
+    tar_info.mode = 0o755 if tar_info.isdir() else 0o644
+    return tar_info
+
+
+def _add_to_tar(tar_file: tarfile.TarFile, source_path: Path, arcname: str) -> None:
+    """Add files to a tar archive in a stable order with normalized metadata."""
+
+    tar_info = tar_file.gettarinfo(str(source_path), arcname)
+    tar_info = _normalize_tar_info(tar_info)
+
+    if source_path.is_dir():
+        tar_file.addfile(tar_info)
+        for child_path in sorted(source_path.iterdir(), key=lambda path: path.name):
+            _add_to_tar(tar_file, child_path, f"{arcname}/{child_path.name}")
+        return
+
+    with open(source_path, "rb") as source_file:
+        tar_file.addfile(tar_info, fileobj=source_file)
+
+
+def _write_reproducible_tar_gz(source_path: Path, tar_path: Path, arcname: str) -> None:
+    """Write a tar.gz archive whose bytes are reproducible for identical input trees."""
+
+    with open(tar_path, "xb") as raw_file:
+        with gzip.GzipFile(filename="", mode="wb", fileobj=raw_file, mtime=0) as gzip_file:
+            with tarfile.open(fileobj=gzip_file, mode="w") as tar_file:
+                _add_to_tar(tar_file, source_path, arcname)
 
 
 def pack_input(sim_config: SimulationConfig, grass_params: GrassParams) -> InputInfo:
@@ -76,8 +114,7 @@ def pack_input(sim_config: SimulationConfig, grass_params: GrassParams) -> Input
             # Create tar.gz file in a temp dir
             temp_dir_path = Path(tempfile.mkdtemp(prefix="itzi-input-"))
             tar_path = temp_dir_path / Path(f"itzi-input-{uuid.uuid4()}.tgz")
-            with tarfile.open(name=tar_path, mode="x:gz") as tar_file:
-                tar_file.add(temp_path_zarr, arcname="itzi_input.zarr")
+            _write_reproducible_tar_gz(temp_path_zarr, tar_path, arcname="itzi_input.zarr")
 
     # remove mapset info from all maps in sim_config
     cleaned_input_map_names = {
@@ -188,6 +225,9 @@ def to_zarr(
 
     # Add dimension names to dataset attributes
     ds_select.attrs["itzi_dimension_names"] = dimension_names
+
+    # Remove history because it contains the creation time and changes the hash
+    del ds_select.attrs["history"]
 
     ds_select.to_zarr(tempdir)
 
