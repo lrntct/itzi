@@ -5,9 +5,11 @@
 - The GRASS-based tests need `--forked` so each tests run in a separate process: `uv run pytest --forked tests/grass`.
 - It is not necessary to run core tests with `--forked`. Additionally, `--forked` prevents the display of print statements and other outputs.
 - Enforce code formatting: `uvx ruff format .`
+- After editing a *.pyx file, recompile with `uv pip install -e .`; if not the old binary will continue to be used.
 
 ## Code style
 - Use python type hints. When a function that does not yet use hints is substantially edited, take the opportunity to add type hints.
+- Do not quote class names in hints. Use `from __future__ import annotations` when necessary.
 - Since the arguments types and return types are already documented by the hints, there's no need to duplicate this information in the docstrings.
 - Apart from particular cases, use pydantic BaseModel instead of dataclass
 - Place imports at the top of the file. Only break this rule to prevent heavy imports in a rarely used function (for example, CLI options).
