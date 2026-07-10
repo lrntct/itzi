@@ -42,7 +42,6 @@ from itzi.configreader import ConfigReader
 import itzi.itzi_error as itzi_error
 import itzi.messenger as msgr
 from itzi.const import VerbosityLevel
-from itzi.cli_parser import build_parser
 from itzi import cli_parser
 from itzi.profiler import profile_context
 from itzi.simulation_builder import SimulationBuilder
@@ -62,7 +61,7 @@ if TYPE_CHECKING:
 
 def main(argv: list[str] | None = None) -> None:
     """argv: alternative CLI arguments, used for testing (default to sys.argv)"""
-    args = build_parser().parse_args(argv)
+    args = cli_parser.build_parser().parse_args(argv)
 
     command_mapper: dict[str, Callable] = {
         "run": itzi_run,
