@@ -10,7 +10,8 @@ dependencies = [
     "bmipy>=2.0.1",
     "itzi-core>=0.2.0",
 ]
-requires-python = ">=3.12,<3.14"  # 3.12 for typing. pyswmm does not support python > 3.13
+# min 3.12 for typing. itzi-core/pyswmm does not support python > 3.13
+requires-python = ">=3.12,<3.14"
 readme = "README.md"
 license = "GPL-2.0-or-later"
 keywords = ["science", "engineering", "hydrology", "flood"]
@@ -57,7 +58,6 @@ dev = [
 where = ["src"]
 
 [tool.setuptools.package-data]
-"*" = ["*.pyx"]
 "itzi.data" = ["*.ini"]
 "itzi.data.colortable" = ["*.txt"]
 
@@ -66,7 +66,6 @@ pythonpath = ["src", "."]
 addopts = ["--import-mode=importlib", "--benchmark-min-rounds=7"]
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
-    "cloud: marks tests using cloud functions (deselect with '-m \"not cloud\"')",
 ]
 
 [tool.ruff]
