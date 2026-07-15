@@ -1,5 +1,5 @@
 """
-Copyright (C) 2025 Laurent Courty
+Copyright (C) 2025-2026 Laurent Courty
 
 This program is free software; you can redistribute it and/or
 modify it under the terms of the GNU General Public License
@@ -23,7 +23,7 @@ from itzi_core.providers.base import RasterOutputProvider, VectorOutputProvider
 
 if TYPE_CHECKING:
     from datetime import datetime, timedelta
-    from itzi_core.providers.grass_interface import GrassInterface
+    from itzi.providers.grass_interface import GrassInterface
     from itzi_core.data_containers import SimulationData, DrainageNetworkData
 
 

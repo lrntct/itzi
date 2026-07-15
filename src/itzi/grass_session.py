@@ -1,5 +1,5 @@
 """
-Copyright (C) 2025 Laurent Courty
+Copyright (C) 2025-2026 Laurent Courty
 
 This program is free software; you can redistribute it and/or
 modify it under the terms of the GNU General Public License
@@ -22,7 +22,7 @@ import importlib.util
 import itzi.messenger as msgr
 
 if TYPE_CHECKING:
-    from itzi.data_containers import GrassParams
+    from itzi_core.data_containers import GrassParams
 
 
 class GrassSessionManager:
