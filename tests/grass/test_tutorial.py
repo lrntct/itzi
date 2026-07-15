@@ -14,8 +14,8 @@ import grass.script as gscript
 
 from itzi import SimulationRunner
 from itzi.configreader import ConfigReader
-from itzi.data_containers import DrainageNodeAttributes, DrainageLinkAttributes
-from itzi.profiler import profile_context
+from itzi_core.data_containers import DrainageNodeAttributes, DrainageLinkAttributes
+from itzi_core.profiler import profile_context
 
 DEM_URL = "https://zenodo.org/api/records/15009114/files/elev_lid792_1m.gtiff/content"
 MD5_SUM = "224f73dfa37244722b879a5f653682c9"

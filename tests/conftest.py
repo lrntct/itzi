@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 import pytest
 import numpy as np
 
-from itzi.array_definitions import ARRAY_DEFINITIONS, ArrayCategory
+from itzi_core.array_definitions import ARRAY_DEFINITIONS, ArrayCategory
 
 
 class Helpers:

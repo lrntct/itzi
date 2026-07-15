@@ -18,13 +18,13 @@ from typing import TypedDict, TYPE_CHECKING
 
 import numpy as np
 
-from itzi.const import TemporalType
-from itzi.providers.base import RasterOutputProvider, VectorOutputProvider
+from itzi_core.const import TemporalType
+from itzi_core.providers.base import RasterOutputProvider, VectorOutputProvider
 
 if TYPE_CHECKING:
     from datetime import datetime, timedelta
-    from itzi.providers.grass_interface import GrassInterface
-    from itzi.data_containers import SimulationData, DrainageNetworkData
+    from itzi_core.providers.grass_interface import GrassInterface
+    from itzi_core.data_containers import SimulationData, DrainageNetworkData
 
 
 class GrassRasterOutputConfig(TypedDict):
