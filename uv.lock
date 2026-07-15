@@ -317,11 +317,12 @@ wheels = [
 [[package]]
 name = "itzi"
 version = "26.7"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
     { name = "bmipy" },
     { name = "itzi-core" },
     { name = "numpy" },
+    { name = "pydantic" },
 ]
 
 [package.dev-dependencies]
@@ -348,6 +349,7 @@ requires-dist = [
     { name = "bmipy", specifier = ">=2.0.1" },
     { name = "itzi-core", specifier = ">=0.2.0" },
     { name = "numpy", specifier = ">=2.5" },
+    { name = "pydantic", specifier = ">=2.10" },
 ]
 
 [package.metadata.requires-dev]

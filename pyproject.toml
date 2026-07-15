@@ -7,8 +7,9 @@ authors = [
 ]
 dependencies = [
     "numpy>=2.5",
-    "bmipy>=2.0.1",
     "itzi-core>=0.2.0",
+    "bmipy>=2.0.1",
+    "pydantic>=2.10"
 ]
 # min 3.12 for typing. itzi-core/pyswmm does not support python > 3.13
 requires-python = ">=3.12,<3.14"
@@ -20,7 +21,6 @@ classifiers = [
     "Environment :: Console",
     "Intended Audience :: Science/Research",
     "Operating System :: OS Independent",
-    "Programming Language :: Cython",
     "Programming Language :: Python :: 3 :: Only",
     "Topic :: Scientific/Engineering",
     "Topic :: Scientific/Engineering :: Hydrology",
@@ -53,6 +53,10 @@ dev = [
     "sphinx-argparse>=0.5.2",
     "sphinx-rtd-theme>=3.1.0",
 ]
+
+[build-system]
+requires = ["setuptools >= 83"]
+build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
