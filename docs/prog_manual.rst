@@ -37,6 +37,10 @@ the tests must be run in separate processes using *pytest-forked*.
 
     uv run pytest --forked -v tests/
 
+This would be quite slow, because all individual tests will be run in a separate process.
+The tests needing forking are marked with *@pytest.mark.forked*.
+It is faster to run each test file independently, and let the marking do its job.
+
 To estimate the test coverage:
 
 .. code:: sh
