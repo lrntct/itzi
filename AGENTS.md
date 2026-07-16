@@ -2,7 +2,7 @@
 
 ## Common commands
 - Run a single test: `uv run pytest tests/my_test.py`
-- Due to a bug in GRASS, tests will fails if the mapset is changed between tests. Run each test file independently to prevent this.
+- Due to a bug in GRASS, tests will fails if the mapset is changed between tests. Run each test file independently to prevent this. Tests that need to run in a separate process are marked with `@pytest.mark.forked`.
 - Enforce code formatting: `uvx ruff format .`
 
 ## Code style
