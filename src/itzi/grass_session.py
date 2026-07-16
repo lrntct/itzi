@@ -30,7 +30,7 @@ class GrassSessionManager:
 
     def __init__(self, grass_params: GrassParams):
         self.grass_params = grass_params
-        self.session = None
+        self.grass_session = None
         if importlib.util.find_spec("grass"):
             self._is_active = True
         else:
@@ -80,9 +80,9 @@ class GrassSessionManager:
 
     def close(self):
         """Stop GRASS session."""
-        if self.session is not None and self._is_active:
+        if self.grass_session is not None and self._is_active:
             try:
-                self.session.finish()
+                self.grass_session.finish()
             except Exception as e:
                 print(f"Warning: Error cleaning up GRASS session: {e}")
         self._is_active = False
