@@ -18,7 +18,7 @@ jobs:
     - name: Install dependencies
       run: |
         apt-get update
-        apt-get install -y ca-certificates nodejs
+        apt-get install -y ca-certificates
 
     - uses: actions/checkout@v6
 
