@@ -127,7 +127,7 @@ class BmiItzi(Bmi):
 
     def get_end_time(self):
         """End time of model."""
-        duration = self.itzi.sim.start_time - self.itzi.sim.end_time
+        duration = self.itzi.sim.end_time - self.itzi.sim.start_time
         return float(duration.total_seconds())
 
     def get_current_time(self):
