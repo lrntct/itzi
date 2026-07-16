@@ -13,16 +13,27 @@ GNU General Public License for more details.
 """
 
 from __future__ import annotations
-from typing import TYPE_CHECKING
 import sys
 import os
 import subprocess
 import importlib.util
 
+from pydantic import BaseModel, ConfigDict
+
 import itzi.messenger as msgr
 
-if TYPE_CHECKING:
-    from itzi_core.data_containers import GrassParams
+
+class GrassParams(BaseModel):
+    """Parameters for GRASS GIS session."""
+
+    model_config = ConfigDict(frozen=True)
+
+    grassdata: str | None = None
+    location: str | None = None
+    mapset: str | None = None
+    region: str | None = None
+    mask: str | None = None
+    grass_bin: str | None = None
 
 
 class GrassSessionManager:

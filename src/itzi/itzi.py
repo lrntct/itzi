@@ -45,9 +45,10 @@ from itzi.cli_parser import build_parser
 from itzi.grass_session import GrassSessionManager
 
 if TYPE_CHECKING:
-    from itzi_core.data_containers import SimulationConfig, GrassParams
-    from itzi.providers.grass_interface import GrassInterface
+    from itzi_core.data_containers import SimulationConfig
     from itzi_core.simulation import Simulation
+    from itzi.grass_session import GrassParams
+    from itzi.providers.grass_interface import GrassInterface
 
 
 def main(argv=None):
