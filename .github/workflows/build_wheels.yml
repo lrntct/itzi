@@ -3,9 +3,35 @@ name: Build
 on:
   workflow_dispatch:
   pull_request:
-    branches: [ "main" ]
+    branches: ["main"]
 
 jobs:
+  build_wheel:
+    name: Build and test universal wheel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Build universal wheel
+        run: |
+          python -m pip install --upgrade build
+          python -m build --wheel
+          test -f dist/*-py3-none-any.whl
+
+      - name: Smoke-test installed wheel
+        run: |
+          python -m venv /tmp/itzi-wheel-test
+          /tmp/itzi-wheel-test/bin/python -m pip install dist/*-py3-none-any.whl
+          /tmp/itzi-wheel-test/bin/itzi version
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: itzi-universal-wheel
+          path: dist/*-py3-none-any.whl
 
   build_sdist:
     name: Build source distribution
@@ -18,5 +44,5 @@ jobs:
 
       - uses: actions/upload-artifact@v6
         with:
-          name: cibw-sdist
+          name: sdist
           path: dist/*.tar.gz
