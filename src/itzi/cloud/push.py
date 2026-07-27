@@ -13,29 +13,38 @@ GNU General Public License for more details.
 """
 
 from __future__ import annotations
-from typing import TYPE_CHECKING, Mapping
-from pathlib import Path
-import tempfile
-import json
-import uuid
-import tarfile
+
+import base64
 import gzip
 import hashlib
-import base64
+import json
+import tarfile
+import tempfile
+import uuid
+from collections.abc import Mapping
 from datetime import timedelta
+from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 import requests
+from itzi_core.const import TemporalType
 
-from itzi.grass_session import GrassSessionManager
-from itzi.configreader import ConfigReader
-from itzi.const import TemporalType
 from itzi.cloud import urls
-from itzi.cloud.schemas import InputInfo, DomainInfo, SimulationRequestSchema
 from itzi.cloud.grass_utils import get_grass_params_from_env
+from itzi.cloud.schemas import (
+    DomainInfo,
+    InputInfo,
+    SimulationRequestSchema,
+    SimulationResponseSchema,
+)
+from itzi.configreader import ConfigReader
+from itzi.grass_session import GrassSessionManager
 
 if TYPE_CHECKING:
-    from itzi.data_containers import SimulationConfig, GrassParams
+    from itzi_core.data_containers import SimulationConfig
+
+    from itzi.grass_session import GrassParams
     from itzi.providers.grass_interface import GrassInterface
 
 try:
@@ -328,14 +337,14 @@ def request_simulation(
     session_token: str,
     metadata: SimulationRequestSchema,
     endpoint: str | None = None,
-) -> dict[str, str]:
+) -> SimulationResponseSchema:
     """Send simulation metadata. Return the URL for upload."""
     endpoint = endpoint or urls.get_simulations_endpoint()
     headers: dict[str, str] = {"X-Session-Token": session_token}
     with requests.Session() as session:
         response = session.post(endpoint, json=metadata.model_dump(mode="json"), headers=headers)
     if response.status_code == 201:
-        return json.loads(response._content)
+        return SimulationResponseSchema.model_validate_json(response.text)
     elif response.status_code == 409:
         response_data = json.loads(response.text)
         raise RuntimeError(
@@ -347,11 +356,15 @@ def request_simulation(
         raise RuntimeError(f"Something went wrong: {response}")
 
 
-def upload_input(signed_url: str, payload: Path, content_md5: str, content_type: str) -> bool:
-    headers: dict[str, str] = {"content-md5": content_md5, "content-type": content_type}
-    with requests.Session() as session:
-        with open(payload, mode="rb") as data:
-            response = session.put(signed_url, data=data, headers=headers)
+def upload_input(
+    signed_url: str,
+    payload: Path,
+    method: str,
+    headers: dict[str, str],
+) -> bool:
+    """Upload simulation input using the signed request instructions."""
+    with requests.Session() as session, open(payload, mode="rb") as data:
+        response = session.request(method, signed_url, data=data, headers=headers)
     if response.status_code == 200:
         return True
     else:

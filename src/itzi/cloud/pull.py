@@ -13,19 +13,21 @@ GNU General Public License for more details.
 """
 
 from __future__ import annotations
-from typing import TYPE_CHECKING
+
 import json
 import tarfile
 import tempfile
 import uuid
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import itzi.messenger as msgr
 from itzi.cloud import urls
+from itzi.cloud.schemas import ResultsDownloadResponseSchema
 from itzi.grass_session import GrassSessionManager
 
 if TYPE_CHECKING:
-    from itzi.data_containers import GrassParams
+    from itzi.grass_session import GrassParams
 
 try:
     import requests
@@ -42,7 +44,7 @@ def get_simulation_results_url(
     session_token: str,
     fingerprint: str,
     endpoint: str | None = None,
-) -> dict[str, str]:
+) -> ResultsDownloadResponseSchema:
     """Get the results download information for a simulation."""
     endpoint = endpoint or urls.get_simulations_endpoint()
     headers = {"X-Session-Token": session_token}
@@ -72,23 +74,30 @@ def get_simulation_results_url(
 
             msgr.fatal(error_msg)
 
-        response_data = json.loads(response.text)
+        response_data = ResultsDownloadResponseSchema.model_validate_json(response.text)
 
     return response_data
 
 
-def download_results(download_url: str, temp_dir: Path) -> Path:
+def download_results(
+    download_url: str,
+    temp_dir: Path,
+    method: str = "GET",
+    headers: dict[str, str] | None = None,
+) -> Path:
     """Download simulation results from the signed URL.
 
     Args:
         download_url: Signed URL to download results from
         temp_dir: Temporary directory to download results to
+        method: HTTP method required by the signed request
+        headers: HTTP headers required by the signed request
 
     Returns:
         Path to the downloaded file
     """
     with requests.Session() as session:
-        response = session.get(download_url, stream=True)
+        response = session.request(method, download_url, headers=headers, stream=True)
 
         if response.status_code != 200:
             msgr.fatal(
@@ -133,7 +142,11 @@ def load_to_grass(temp_data_path: Path, grass_params: GrassParams, overwrite: bo
 
 
 def pull_simulation_results(
-    download_url: str, grass_params: GrassParams, overwrite: bool = False
+    download_url: str,
+    grass_params: GrassParams,
+    overwrite: bool = False,
+    download_method: str = "GET",
+    download_headers: dict[str, str] | None = None,
 ) -> None:
     """Pull simulation results from the cloud and load them into GRASS.
 
@@ -143,6 +156,10 @@ def pull_simulation_results(
         Signed URL to download results from.
     grass_params : GrassParams
         GRASS parameters specifying where to load the results.
+    download_method : str
+        HTTP method required by the signed request.
+    download_headers : dict[str, str] | None
+        HTTP headers required by the signed request.
     """
     # Create temporary directory for download
     with tempfile.TemporaryDirectory(prefix="itzi-results-") as temp_dir:
@@ -150,7 +167,12 @@ def pull_simulation_results(
 
         # Download the results
         msgr.message("Downloading results...")
-        downloaded_file = download_results(download_url, temp_path)
+        downloaded_file = download_results(
+            download_url,
+            temp_path,
+            method=download_method,
+            headers=download_headers,
+        )
 
         msgr.message(f"Downloaded to {downloaded_file}")
 

@@ -27,8 +27,9 @@ if TYPE_CHECKING:
 
 
 def itzi_cloud_login(cli_args) -> None:
-    from itzi.cloud.auth import login, logout, is_logged, get_email
     import getpass
+
+    from itzi.cloud.auth import get_email, is_logged, login, logout
 
     email = get_email(cli_args.email)
 
@@ -53,9 +54,9 @@ def itzi_cloud_login(cli_args) -> None:
 
 def itzi_cloud_push(cli_args) -> None:
     """Pack the input data, then submit a request to the cloud compute provider."""
-    from itzi.cloud.push import create_request, request_simulation, upload_input, confirm_upload
-    from itzi.cloud.auth import get_token, check_login
+    from itzi.cloud.auth import check_login, get_token
     from itzi.cloud.metadata_storage import save_simulation_metadata
+    from itzi.cloud.push import confirm_upload, create_request, request_simulation, upload_input
 
     os.environ["ITZI_VERBOSE"] = str(VerbosityLevel.MESSAGE)
 
@@ -71,27 +72,27 @@ def itzi_cloud_push(cli_args) -> None:
             cli_args.project, conf_file, force=cli_args.force
         )
         try:
-            response_dict = request_simulation(session_token=session_token, metadata=request_data)
+            response = request_simulation(session_token=session_token, metadata=request_data)
             msgr.message(f"{conf_file_name}: Uploading input data...")
             upload_ok = upload_input(
-                signed_url=response_dict["upload_url"],
+                signed_url=response.upload_url,
                 payload=input_path,
-                content_md5=request_data.dataset_hash,
-                content_type="application/gzip",
+                method=response.upload_method,
+                headers=response.upload_headers,
             )
             if upload_ok:
                 msgr.message(f"{conf_file_name}: Uploading input data success!")
                 # Send upload confirmation to API
-                confirm_upload(session_token, response_dict["fingerprint"])
+                confirm_upload(session_token, response.fingerprint)
                 # Save metadata for later retrieval
                 try:
                     save_simulation_metadata(
-                        fingerprint=response_dict["fingerprint"],
+                        fingerprint=response.fingerprint,
                         email=email,
                         config_file=str(conf_file),
                         grass_params=grass_params,
                     )
-                    msgr.debug(f"Saved metadata for simulation {response_dict['fingerprint']}")
+                    msgr.debug(f"Saved metadata for simulation {response.fingerprint}")
                 except Exception as e:
                     msgr.warning(f"Failed to save metadata: {e}")
         except Exception as e:
@@ -100,8 +101,8 @@ def itzi_cloud_push(cli_args) -> None:
 
 def itzi_cloud_status(cli_args) -> None:
     """List the requested simulations or display status of a specific simulation."""
-    from itzi.cloud.status import get_simulations_list, get_simulation, display_simulations_list
-    from itzi.cloud.auth import get_token, check_login
+    from itzi.cloud.auth import check_login, get_token
+    from itzi.cloud.status import display_simulations_list, get_simulation, get_simulations_list
 
     os.environ["ITZI_VERBOSE"] = str(VerbosityLevel.MESSAGE)
 
@@ -166,8 +167,8 @@ def resolve_cloud_pull_grass_params(cli_args: argparse.Namespace) -> tuple[Grass
 
 def itzi_cloud_pull(cli_args) -> None:
     """Retrieve results from the cloud and insert them in the GRASS DB."""
+    from itzi.cloud.auth import check_login, get_token
     from itzi.cloud.pull import get_simulation_results_url, pull_simulation_results
-    from itzi.cloud.auth import get_token, check_login
 
     os.environ["ITZI_VERBOSE"] = str(VerbosityLevel.MESSAGE)
 
@@ -189,7 +190,9 @@ def itzi_cloud_pull(cli_args) -> None:
 
     # Pull and load the results
     pull_simulation_results(
-        download_url=results_info["download_url"],
+        download_url=results_info.download_url,
         grass_params=grass_params,
         overwrite=cli_args.overwrite,
+        download_method=results_info.download_method,
+        download_headers=results_info.download_headers,
     )

@@ -12,12 +12,11 @@ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 GNU General Public License for more details.
 """
 
-from pathlib import Path
 from datetime import datetime
-
-from pydantic import BaseModel, ConfigDict
+from pathlib import Path
 
 from itzi_core.data_containers import SimulationConfig
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class DomainInfo(BaseModel):
@@ -47,13 +46,16 @@ class SimulationTaskSchema(BaseModel):
     """Schema for retrieving simulation task status."""
 
     team: str
+    project: str
     created_on: datetime
     last_updated: datetime
     fingerprint: str
     status: str
-    progress: float
+    progress: int
     input_bytes: int
     results_bytes: int
+    error_stage: str = ""
+    error_message: str = ""
 
 
 class SimulationRequestSchema(BaseModel):
@@ -63,8 +65,32 @@ class SimulationRequestSchema(BaseModel):
     force_rerun: bool = False
     sim_config: SimulationConfig
     dataset_hash: str
-    dataset_bytes: int
+    dataset_bytes: int = Field(gt=0, le=1_000_000_000)
     domain_info: DomainInfo
+
+
+class SimulationResponseSchema(BaseModel):
+    """Schema returned when a simulation is created."""
+
+    fingerprint: str
+    email: str
+    team: str
+    project: str
+    upload_url: str
+    upload_method: str
+    upload_headers: dict[str, str]
+    upload_expires_at: datetime
+
+
+class ResultsDownloadResponseSchema(BaseModel):
+    """Schema containing instructions for downloading simulation results."""
+
+    fingerprint: str
+    download_url: str
+    status: str
+    download_method: str = "GET"
+    download_headers: dict[str, str] = Field(default_factory=dict)
+    download_expires_at: datetime | None = None
 
 
 class TeamSchema(BaseModel):

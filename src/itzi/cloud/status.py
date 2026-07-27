@@ -13,8 +13,9 @@ GNU General Public License for more details.
 """
 
 from __future__ import annotations
-from datetime import datetime
+
 import json
+from datetime import datetime
 
 import itzi.messenger as msgr
 from itzi.cloud import urls
@@ -54,23 +55,7 @@ def get_simulations_list(session_token: str, url: str | None = None) -> list[Sim
 
         response_data = json.loads(response.text)
 
-    # Parse the response and create SimulationTaskSchema objects
-    # The API returns a list of tasks directly
-    tasks = []
-    for task_data in response_data:
-        task = SimulationTaskSchema(
-            team=task_data.get("team", ""),
-            created_on=datetime.fromisoformat(task_data["created_on"]),
-            last_updated=datetime.fromisoformat(task_data["last_updated"]),
-            fingerprint=task_data["fingerprint"],
-            status=task_data["status"],
-            progress=task_data["progress"],
-            input_bytes=task_data["input_bytes"],
-            results_bytes=task_data["results_bytes"],
-        )
-        tasks.append(task)
-
-    return tasks
+    return [SimulationTaskSchema.model_validate(task_data) for task_data in response_data]
 
 
 def get_simulation(
@@ -101,20 +86,7 @@ def get_simulation(
 
         response_data = json.loads(response.text)
 
-    # Parse the response and create SimulationTaskSchema object
-    # The API returns a single task object
-    task = SimulationTaskSchema(
-        team=response_data.get("team", ""),
-        created_on=datetime.fromisoformat(response_data["created_on"]),
-        last_updated=datetime.fromisoformat(response_data["last_updated"]),
-        fingerprint=response_data["fingerprint"],
-        status=response_data["status"],
-        progress=response_data["progress"],
-        input_bytes=response_data["input_bytes"],
-        results_bytes=response_data["results_bytes"],
-    )
-
-    return task
+    return SimulationTaskSchema.model_validate(response_data)
 
 
 def display_simulations_list(tasks: list[SimulationTaskSchema]) -> None:
@@ -142,7 +114,7 @@ def display_simulations_list(tasks: list[SimulationTaskSchema]) -> None:
         return dt.astimezone().strftime("%Y-%m-%d %H:%M:%S")
 
     # Print header
-    header = f"{'FINGERPRINT':<17} {'STATUS':<12} {'PROGRESS':<10} {'CREATED':<20} {'UPDATED':<20} {'TEAM':<15} {'INPUT SIZE':<12} {'RESULTS SIZE':<10}"
+    header = f"{'FINGERPRINT':<17} {'STATUS':<12} {'PROGRESS':<10} {'CREATED':<20} {'UPDATED':<20} {'TEAM':<15} {'PROJECT':<15} {'INPUT SIZE':<12} {'RESULTS SIZE':<10}"
     msgr.message(header)
 
     # Print each task
@@ -153,8 +125,9 @@ def display_simulations_list(tasks: list[SimulationTaskSchema]) -> None:
         created = format_local_datetime(task.created_on)
         updated = format_local_datetime(task.last_updated)
         team = task.team[:14] if task.team else "-"
+        project = task.project[:14] if task.project else "-"
         input_size = format_bytes(task.input_bytes)
         results_size = format_bytes(task.results_bytes)
 
-        row = f"{fingerprint:<17} {status:<12} {progress:<10} {created:<20} {updated:<20} {team:<15} {input_size:<12} {results_size:<10}"
+        row = f"{fingerprint:<17} {status:<12} {progress:<10} {created:<20} {updated:<20} {team:<15} {project:<15} {input_size:<12} {results_size:<10}"
         msgr.message(row)

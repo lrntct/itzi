@@ -26,6 +26,7 @@ def test_display_simulations_list_uses_local_timestamps(monkeypatch) -> None:
             [
                 SimulationTaskSchema(
                     team="integration-tests",
+                    project="test-project",
                     created_on=created_on,
                     last_updated=last_updated,
                     fingerprint="fp-123",

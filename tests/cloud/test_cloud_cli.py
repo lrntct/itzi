@@ -132,6 +132,12 @@ def test_itzi_cloud_push_submits_and_saves_metadata(monkeypatch):
         "save_simulation_metadata": [],
     }
     request_data = SimpleNamespace(dataset_hash="hash-123")
+    simulation_response = SimpleNamespace(
+        upload_url="https://example.test/upload",
+        upload_method="POST",
+        upload_headers={"x-upload-token": "upload-123"},
+        fingerprint="fp-123",
+    )
     grass_params = GrassParams(grassdata="/db", location="loc", mapset="mapset")
     messages = []
     monkeypatch.delenv("ITZI_VERBOSE", raising=False)
@@ -149,11 +155,10 @@ def test_itzi_cloud_push_submits_and_saves_metadata(monkeypatch):
             or (request_data, "/tmp/input.tgz", grass_params)
         ),
         request_simulation=lambda session_token, metadata: (
-            calls["request_simulation"].append((session_token, metadata))
-            or {"upload_url": "https://example.test/upload", "fingerprint": "fp-123"}
+            calls["request_simulation"].append((session_token, metadata)) or simulation_response
         ),
-        upload_input=lambda signed_url, payload, content_md5, content_type: (
-            calls["upload_input"].append((signed_url, payload, content_md5, content_type)) or True
+        upload_input=lambda signed_url, payload, method, headers: (
+            calls["upload_input"].append((signed_url, payload, method, headers)) or True
         ),
         confirm_upload=lambda session_token, fingerprint: calls["confirm_upload"].append(
             (session_token, fingerprint)
@@ -172,7 +177,12 @@ def test_itzi_cloud_push_submits_and_saves_metadata(monkeypatch):
     assert calls["create_request"] == [(42, "sim.ini", True)]
     assert calls["request_simulation"] == [("token-123", request_data)]
     assert calls["upload_input"] == [
-        ("https://example.test/upload", "/tmp/input.tgz", "hash-123", "application/gzip")
+        (
+            "https://example.test/upload",
+            "/tmp/input.tgz",
+            "POST",
+            {"x-upload-token": "upload-123"},
+        )
     ]
     assert calls["confirm_upload"] == [("token-123", "fp-123")]
     assert calls["save_simulation_metadata"] == [
@@ -207,10 +217,12 @@ def test_itzi_cloud_push_warns_when_metadata_save_fails(monkeypatch):
             "/tmp/input.tgz",
             grass_params,
         ),
-        request_simulation=lambda session_token, metadata: {
-            "upload_url": "https://example.test/upload",
-            "fingerprint": "fp-123",
-        },
+        request_simulation=lambda session_token, metadata: SimpleNamespace(
+            upload_url="https://example.test/upload",
+            upload_method="PUT",
+            upload_headers={},
+            fingerprint="fp-123",
+        ),
         upload_input=lambda **kwargs: True,
         confirm_upload=lambda session_token, fingerprint: None,
     )
@@ -359,11 +371,13 @@ def test_itzi_cloud_pull_downloads_and_loads_results(monkeypatch):
         "itzi.cloud.pull",
         get_simulation_results_url=lambda session_token, fingerprint: (
             calls["get_simulation_results_url"].append((session_token, fingerprint))
-            or {"download_url": "https://example.test/results"}
+            or SimpleNamespace(
+                download_url="https://example.test/results",
+                download_method="POST",
+                download_headers={"x-download-token": "download-123"},
+            )
         ),
-        pull_simulation_results=lambda download_url, grass_params, overwrite: calls[
-            "pull_simulation_results"
-        ].append((download_url, grass_params, overwrite)),
+        pull_simulation_results=lambda **kwargs: calls["pull_simulation_results"].append(kwargs),
     )
     monkeypatch.setattr(
         "itzi.cloud.cli.resolve_cloud_pull_grass_params",
@@ -390,7 +404,13 @@ def test_itzi_cloud_pull_downloads_and_loads_results(monkeypatch):
     assert verbose_messages == ["  Location: /db/loc/mapset"]
     assert calls["get_simulation_results_url"] == [("token-123", "fp-123")]
     assert calls["pull_simulation_results"] == [
-        ("https://example.test/results", grass_params, True)
+        {
+            "download_url": "https://example.test/results",
+            "grass_params": grass_params,
+            "overwrite": True,
+            "download_method": "POST",
+            "download_headers": {"x-download-token": "download-123"},
+        }
     ]
 
 

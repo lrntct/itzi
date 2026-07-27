@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import argparse
 import base64
-from dataclasses import dataclass
 import hashlib
 import io
 import json
 import tarfile
 import threading
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -17,14 +17,13 @@ from typing import Any, cast
 from urllib.parse import urlparse
 
 import pytest
-
-from itzi_core.itzi_error import ItziFatal
+from itzi_core.const import TemporalType
 from itzi_core.data_containers import SimulationConfig, SurfaceFlowParameters
 
 from itzi.cloud.cli import itzi_cloud_login, itzi_cloud_pull, itzi_cloud_push, itzi_cloud_status
 from itzi.cloud.schemas import DomainInfo, SimulationRequestSchema
-from itzi.const import TemporalType
 from itzi.grass_session import GrassParams
+from itzi.messenger import FatalError
 
 
 def _build_tar_archive(root_name: str, files: dict[str, bytes]) -> bytes:
@@ -70,18 +69,20 @@ class FakeCloudState:
         self.simulations: dict[str, dict[str, Any]] = {}
         self.uploaded_payloads: dict[str, bytes] = {}
         self.upload_headers: dict[str, dict[str, str]] = {}
+        self.download_headers: dict[str, dict[str, str]] = {}
         self.download_archives: dict[str, bytes] = {}
         self.created_requests: list[dict[str, Any]] = []
         self.confirmed_fingerprints: list[str] = []
         self.next_simulation_creation_error: tuple[int, dict[str, Any]] | None = None
         self.results_lookup_errors: dict[str, tuple[int, dict[str, Any]]] = {}
 
-    def create_simulation(self, metadata: dict[str, Any], base_url: str) -> dict[str, str]:
+    def create_simulation(self, metadata: dict[str, Any], base_url: str) -> dict[str, Any]:
         fingerprint = f"fp-{len(self.simulations) + 1:03d}"
         now = datetime.now(UTC).isoformat()
         self.created_requests.append(metadata)
         self.simulations[fingerprint] = {
             "team": "integration-tests",
+            "project": "test-project",
             "created_on": now,
             "last_updated": now,
             "fingerprint": fingerprint,
@@ -91,8 +92,18 @@ class FakeCloudState:
             "results_bytes": 0,
         }
         return {
-            "upload_url": f"{base_url}/uploads/{fingerprint}",
             "fingerprint": fingerprint,
+            "email": "user@example.com",
+            "team": "integration-tests",
+            "project": "test-project",
+            "upload_url": f"{base_url}/uploads/{fingerprint}",
+            "upload_method": "PUT",
+            "upload_headers": {
+                "content-md5": metadata["dataset_hash"],
+                "content-type": "application/gzip",
+                "x-upload-token": "upload-123",
+            },
+            "upload_expires_at": (datetime.now(UTC) + timedelta(minutes=15)).isoformat(),
         }
 
     def confirm_upload(self, fingerprint: str) -> None:
@@ -191,7 +202,14 @@ class FakeCloudRequestHandler(BaseHTTPRequestHandler):
                 return
             self._send_json(
                 200,
-                {"download_url": f"{self.server.base_url}/downloads/{fingerprint}"},
+                {
+                    "fingerprint": fingerprint,
+                    "download_url": f"{self.server.base_url}/downloads/{fingerprint}",
+                    "status": "completed",
+                    "download_method": "GET",
+                    "download_headers": {"x-download-token": "download-123"},
+                    "download_expires_at": (datetime.now(UTC) + timedelta(minutes=15)).isoformat(),
+                },
             )
             return
 
@@ -208,6 +226,9 @@ class FakeCloudRequestHandler(BaseHTTPRequestHandler):
 
         if path.startswith("/downloads/"):
             fingerprint = path.removeprefix("/downloads/")
+            self.server.state.download_headers[fingerprint] = {
+                "x-download-token": self.headers.get("x-download-token", "")
+            }
             archive = self.server.state.download_archives.get(fingerprint)
             if archive is None:
                 self._send_json(404, {"detail": "Results not found"})
@@ -236,6 +257,7 @@ class FakeCloudRequestHandler(BaseHTTPRequestHandler):
         self.server.state.upload_headers[fingerprint] = {
             "content-md5": expected_md5 or "",
             "content-type": self.headers.get("content-type", ""),
+            "x-upload-token": self.headers.get("x-upload-token", ""),
         }
         self._send_bytes(200, b"")
 
@@ -432,6 +454,7 @@ def test_cloud_roundtrip_with_fake_provider(
     assert fake_cloud_server.state.upload_headers["fp-001"] == {
         "content-md5": ctx.request_data.dataset_hash,
         "content-type": "application/gzip",
+        "x-upload-token": "upload-123",
     }
     assert fake_cloud_server.state.confirmed_fingerprints == ["fp-001"]
 
@@ -456,6 +479,9 @@ def test_cloud_roundtrip_with_fake_provider(
     assert loaded_results[0]["metadata"] == '{"fingerprint": "fp-001"}'
     assert loaded_results[0]["grass_params"] == ctx.grass_params
     assert loaded_results[0]["overwrite"] is True
+    assert fake_cloud_server.state.download_headers["fp-001"] == {
+        "x-download-token": "download-123"
+    }
 
 
 @pytest.mark.cloud
@@ -518,7 +544,7 @@ def test_cloud_pull_surfaces_api_detail_when_results_are_unavailable(
         {"detail": "Results are not available yet"},
     )
 
-    with pytest.raises(ItziFatal, match="Results are not available yet"):
+    with pytest.raises(FatalError, match="Results are not available yet"):
         itzi_cloud_pull(
             argparse.Namespace(
                 fingerprint="fp-001",
@@ -550,5 +576,5 @@ def test_cloud_status_requires_an_active_session(
     fake_cloud_server.state.tokens_by_email.clear()
     fake_cloud_server.state.email_by_token.clear()
 
-    with pytest.raises(ItziFatal, match="Please log in first"):
+    with pytest.raises(FatalError, match="Please log in first"):
         itzi_cloud_status(argparse.Namespace(fingerprint=None))
