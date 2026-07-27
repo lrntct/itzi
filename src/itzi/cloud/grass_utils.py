@@ -13,10 +13,11 @@ GNU General Public License for more details.
 """
 
 from __future__ import annotations
-from enum import Enum
-from pathlib import Path
+
 import importlib.util
 import os
+from enum import Enum
+from pathlib import Path
 
 from itzi.grass_session import GrassParams
 
@@ -29,64 +30,16 @@ class GrassParamsSource(Enum):
 
 
 def is_grass_session_active() -> bool:
-    """
-    Check if a GRASS session is currently active.
-
-    A GRASS session is considered active when:
-    1. The grass.script module can be imported
-    2. Environment variables are set: GISDBASE, LOCATION_NAME, MAPSET
-    3. The specified paths exist and are accessible
-
-    Returns
-    -------
-    bool
-        True if a GRASS session is active and valid, False otherwise.
-    """
-    # Check if grass.script can be imported
-    if not importlib.util.find_spec("grass"):
-        return False
-
-    # Check if required environment variables are set
-    gisdbase = os.environ.get("GISDBASE")
-    location_name = os.environ.get("LOCATION_NAME")
-    mapset = os.environ.get("MAPSET")
-
-    if not all([gisdbase, location_name, mapset]):
-        return False
-
-    # Validate that paths exist and are accessible
-    gisdbase_path = Path(gisdbase)
-    location_path = gisdbase_path / location_name
-    mapset_path = location_path / mapset
-
-    if not gisdbase_path.exists() or not gisdbase_path.is_dir():
-        return False
-
-    if not location_path.exists() or not location_path.is_dir():
-        return False
-
-    if not mapset_path.exists() or not mapset_path.is_dir():
-        return False
-
-    # Check that we have appropriate permissions
-    if not os.access(gisdbase_path, os.R_OK):
-        return False
-
-    if not os.access(location_path, os.R_OK):
-        return False
-
-    if not os.access(mapset_path, os.W_OK):
-        return False
-
-    return True
+    """Return whether a usable active GRASS session is available."""
+    return get_active_grass_params() is not None
 
 
 def get_active_grass_params() -> GrassParams | None:
     """
     Extract GRASS parameters from the currently active GRASS session.
 
-    This function retrieves the grassdata, location, and mapset from
-    environment variables set by an active GRASS session.
+    This function retrieves the grassdata, location, and mapset from the
+    GRASS runtime environment via :func:`grass.script.gisenv`.
 
     Returns
     -------
@@ -97,15 +50,46 @@ def get_active_grass_params() -> GrassParams | None:
     Notes
     -----
     - Region and mask are not included as they're input processing parameters
-    - grass_bin is not included as it's not available from environment
+    - grass_bin is not included as it's not available from the runtime environment
     """
-    if not is_grass_session_active():
+    if not importlib.util.find_spec("grass"):
+        return None
+
+    try:
+        import grass.script as gscript
+
+        grass_env = gscript.gisenv()
+    except Exception:  # noqa: BLE001 - an optional session probe must allow fallbacks
+        return None
+
+    gisdbase = grass_env.get("GISDBASE")
+    location_name = grass_env.get("LOCATION_NAME")
+    mapset = grass_env.get("MAPSET")
+
+    if not all([gisdbase, location_name, mapset]):
+        return None
+
+    gisdbase_path = Path(gisdbase)
+    location_path = gisdbase_path / location_name
+    mapset_path = location_path / mapset
+
+    if not gisdbase_path.is_dir():
+        return None
+    if not location_path.is_dir():
+        return None
+    if not mapset_path.is_dir():
+        return None
+    if not os.access(gisdbase_path, os.R_OK):
+        return None
+    if not os.access(location_path, os.R_OK):
+        return None
+    if not os.access(mapset_path, os.W_OK):
         return None
 
     return GrassParams(
-        grassdata=os.environ.get("GISDBASE"),
-        location=os.environ.get("LOCATION_NAME"),
-        mapset=os.environ.get("MAPSET"),
+        grassdata=gisdbase,
+        location=location_name,
+        mapset=mapset,
         region=None,
         mask=None,
         grass_bin=None,

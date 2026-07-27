@@ -14,9 +14,8 @@ from itzi.cloud.cli import (
     itzi_cloud_status,
     resolve_cloud_pull_grass_params,
 )
-from itzi.messenger import VerbosityLevel
 from itzi.grass_session import GrassParams
-from itzi_core.itzi_error import ItziFatal
+from itzi.messenger import VerbosityLevel
 
 
 def install_stub_module(monkeypatch, module_name: str, **attrs) -> ModuleType:
@@ -270,12 +269,25 @@ def test_itzi_cloud_push_requires_project_id(monkeypatch):
         check_login=lambda: pytest.fail("login should not be checked"),
         get_token=lambda email: pytest.fail("token should not be requested"),
     )
+    install_stub_module(
+        monkeypatch,
+        "itzi.cloud.push",
+        create_request=lambda *args: pytest.fail("request should not be created"),
+        request_simulation=lambda **kwargs: pytest.fail("simulation should not be requested"),
+        upload_input=lambda **kwargs: pytest.fail("input should not be uploaded"),
+        confirm_upload=lambda *args: pytest.fail("upload should not be confirmed"),
+    )
+    install_stub_module(
+        monkeypatch,
+        "itzi.cloud.metadata_storage",
+        save_simulation_metadata=lambda **kwargs: pytest.fail("metadata should not be saved"),
+    )
     monkeypatch.setattr(
         "itzi.cloud.cli.msgr.fatal",
-        lambda message: (_ for _ in ()).throw(ItziFatal(message)),
+        lambda message: (_ for _ in ()).throw(RuntimeError(message)),
     )
 
-    with pytest.raises(ItziFatal, match="Cloud project ID is required"):
+    with pytest.raises(RuntimeError, match="Cloud project ID is required"):
         itzi_cloud_push(argparse.Namespace(project=None, force=False, config_file=["sim.ini"]))
 
 
@@ -455,10 +467,10 @@ def test_resolve_cloud_pull_grass_params_rejects_partial_cli_override(monkeypatc
     monkeypatch.setattr("itzi.cloud.grass_utils.get_active_grass_params", lambda: None)
     monkeypatch.setattr(
         "itzi.cloud.cli.msgr.fatal",
-        lambda message: (_ for _ in ()).throw(ItziFatal(message)),
+        lambda message: (_ for _ in ()).throw(RuntimeError(message)),
     )
 
-    with pytest.raises(ItziFatal, match="all three are required"):
+    with pytest.raises(RuntimeError, match="all three are required"):
         resolve_cloud_pull_grass_params(
             argparse.Namespace(
                 fingerprint="fp-123",
@@ -477,10 +489,10 @@ def test_resolve_cloud_pull_grass_params_requires_any_source(monkeypatch):
     )
     monkeypatch.setattr(
         "itzi.cloud.cli.msgr.fatal",
-        lambda message: (_ for _ in ()).throw(ItziFatal(message)),
+        lambda message: (_ for _ in ()).throw(RuntimeError(message)),
     )
 
-    with pytest.raises(ItziFatal, match="Could not determine GRASS parameters"):
+    with pytest.raises(RuntimeError, match="Could not determine GRASS parameters"):
         resolve_cloud_pull_grass_params(
             argparse.Namespace(
                 fingerprint="fp-123",
