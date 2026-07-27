@@ -117,3 +117,66 @@ def test_pack_input_produces_stable_hash_for_identical_inputs(
     finally:
         shutil.rmtree(first_input_info.dataset_path.parent, ignore_errors=True)
         shutil.rmtree(second_input_info.dataset_path.parent, ignore_errors=True)
+
+
+def test_to_zarr_slices_relative_coordinates_in_their_declared_units(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import xarray as xr
+
+    from itzi.cloud import push
+
+    dataset = xr.Dataset(
+        data_vars={
+            "rain": (("start_time_rain", "y", "x"), [[[1]], [[2]], [[3]], [[4]]]),
+            "inflow": (
+                ("start_time_inflow", "y", "x"),
+                [[[1]], [[2]], [[3]], [[4]]],
+            ),
+        },
+        coords={
+            "start_time_rain": (
+                "start_time_rain",
+                [0, 5, 10, 15],
+                {"units": "minutes"},
+            ),
+            "start_time_inflow": (
+                "start_time_inflow",
+                [0, 300, 600, 900],
+                {"units": "seconds"},
+            ),
+            "y": [0],
+            "x": [0],
+        },
+        attrs={"history": "generated for test"},
+    )
+    relative_start = datetime.min.replace(tzinfo=UTC)
+    sim_config = SimulationConfig(
+        start_time=relative_start,
+        end_time=relative_start + timedelta(minutes=10),
+        record_step=timedelta(minutes=5),
+        temporal_type=TemporalType.RELATIVE,
+        input_map_names={"rain": "rain", "inflow": "inflow"},
+        output_map_names={"h": "depth"},
+        surface_flow_parameters=SurfaceFlowParameters(),
+    )
+    grass_params = GrassParams(
+        grassdata=str(tmp_path / "grassdb"),
+        location="project",
+        mapset="mapset",
+    )
+    selected_datasets: list[xr.Dataset] = []
+
+    monkeypatch.setattr(push, "read_all_maps", lambda *_args: dataset)
+    monkeypatch.setattr(
+        push.xr.Dataset,
+        "to_zarr",
+        lambda selected, _path: selected_datasets.append(selected),
+    )
+
+    push.to_zarr({}, grass_params, sim_config, tempdir=tmp_path / "input.zarr")
+
+    selected = selected_datasets[0]
+    assert selected.start_time_rain.values.tolist() == [0, 5, 10]
+    assert selected.start_time_inflow.values.tolist() == [0, 300, 600]

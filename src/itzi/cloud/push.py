@@ -22,7 +22,6 @@ import tarfile
 import tempfile
 import uuid
 from collections.abc import Mapping
-from datetime import timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -55,6 +54,14 @@ except ImportError:
         "'uv tool install itzi[cloud]' "
         "or 'pip install itzi[cloud]'"
     )
+
+
+RELATIVE_TIME_UNIT_SECONDS = {
+    "seconds": 1,
+    "minutes": 60,
+    "hours": 3600,
+    "days": 86400,
+}
 
 
 def _normalize_tar_info(tar_info: tarfile.TarInfo) -> tarfile.TarInfo:
@@ -214,19 +221,26 @@ def to_zarr(
 
     ds = read_all_maps(cat_dict, grass_params)
 
-    if sim_config.temporal_type == TemporalType.RELATIVE:
-        start_time = timedelta(seconds=0)
-        end_time = sim_config.end_time - sim_config.start_time
-    else:
-        start_time = sim_config.start_time
-        end_time = sim_config.end_time
-
-    time_coords = []
+    time_slices = {}
     for coords_name, coords_values in ds.coords.items():
-        if "start_time" in str(coords_name):
-            time_coords.append(coords_name)
-    time_slices = {tc: slice(start_time, end_time) for tc in time_coords}
-    ds_select = ds.sel(**time_slices)
+        if "start_time" not in str(coords_name):
+            continue
+        if sim_config.temporal_type == TemporalType.RELATIVE:
+            time_unit = coords_values.attrs.get("units")
+            try:
+                unit_seconds = RELATIVE_TIME_UNIT_SECONDS[time_unit]
+            except KeyError:
+                supported_units = ", ".join(RELATIVE_TIME_UNIT_SECONDS)
+                raise ValueError(
+                    f"Relative time coordinate <{coords_name}> uses unsupported unit "
+                    f"<{time_unit}>; supported units are {supported_units}"
+                ) from None
+            duration = sim_config.end_time - sim_config.start_time
+            end_time = duration.total_seconds() / unit_seconds
+            time_slices[coords_name] = slice(0, end_time)
+        else:
+            time_slices[coords_name] = slice(sim_config.start_time, sim_config.end_time)
+    ds_select = ds.sel(time_slices)
 
     # Validate and extract dimension names
     validate_dimension_conventions(ds_select)
