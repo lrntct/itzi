@@ -37,6 +37,10 @@ def get_simulations_endpoint() -> str:
     return f"{get_api_base()}/itzi-api/simulations"
 
 
+def get_projects_endpoint() -> str:
+    return f"{get_api_base()}/project-api/projects"
+
+
 # Backward-compatible module attributes for callers that only need the default values.
 API_BASE = get_api_base()
 LOGIN_ENDPOINT = get_login_endpoint()

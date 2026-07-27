@@ -65,3 +65,16 @@ class SimulationRequestSchema(BaseModel):
     dataset_hash: str
     dataset_bytes: int
     domain_info: DomainInfo
+
+
+class TeamSchema(BaseModel):
+    id: int
+    name: str
+    slug: str
+
+
+class ProjectSchema(BaseModel):
+    id: int
+    name: str
+    slug: str
+    team: TeamSchema
