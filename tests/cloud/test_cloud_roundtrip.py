@@ -259,7 +259,7 @@ class FakeCloudRequestHandler(BaseHTTPRequestHandler):
             "content-type": self.headers.get("content-type", ""),
             "x-upload-token": self.headers.get("x-upload-token", ""),
         }
-        self._send_bytes(200, b"")
+        self._send_bytes(201, b"")
 
     def do_DELETE(self) -> None:  # noqa: N802
         path = urlparse(self.path).path

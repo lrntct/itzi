@@ -382,7 +382,7 @@ def upload_input(
     """Upload simulation input using the signed request instructions."""
     with requests.Session() as session, open(payload, mode="rb") as data:
         response = session.request(method, signed_url, data=data, headers=headers)
-    if response.status_code == 200:
+    if 200 <= response.status_code < 300:
         return True
     else:
         raise RuntimeError(f"Something went wrong: {response.__dict__}")

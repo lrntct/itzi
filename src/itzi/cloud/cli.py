@@ -81,7 +81,6 @@ def itzi_cloud_push(cli_args) -> None:
                 headers=response.upload_headers,
             )
             if upload_ok:
-                msgr.message(f"{conf_file_name}: Uploading input data success!")
                 # Send upload confirmation to API
                 confirm_upload(session_token, response.fingerprint)
                 # Save metadata for later retrieval
@@ -93,6 +92,9 @@ def itzi_cloud_push(cli_args) -> None:
                         grass_params=grass_params,
                     )
                     msgr.debug(f"Saved metadata for simulation {response.fingerprint}")
+                    msgr.message(
+                        f"{conf_file_name}: Successful submission. Fingerprint: {response.fingerprint}"
+                    )
                 except Exception as e:
                     msgr.warning(f"Failed to save metadata: {e}")
         except Exception as e:
