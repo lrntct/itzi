@@ -45,7 +45,7 @@ cloud = [
     "pandas>=3.0.3",
     "platformdirs>=4.10.0",
     "pyproj>=3.7.2",
-    "xarray-grass>=0.4.0",
+    "xarray-grass>=0.5.0",
     "xarray[io,parallel]>=2026.4.0",
     "zarr>=3.2.1",
 ]

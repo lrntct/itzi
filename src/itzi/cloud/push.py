@@ -22,12 +22,15 @@ import tarfile
 import tempfile
 import uuid
 from collections.abc import Mapping
+from datetime import timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
 import requests
 from itzi_core.const import TemporalType
+from pyproj import CRS
+from pyproj.exceptions import CRSError
 
 from itzi.cloud import urls
 from itzi.cloud.grass_utils import get_grass_params_from_env
@@ -210,6 +213,50 @@ def validate_dimension_conventions(ds: xr.Dataset) -> None:
                 )
 
 
+def validate_crs(ds: xr.Dataset) -> None:
+    """Validate that the dataset contains a usable projected or engineering CRS."""
+    crs_wkt = ds.attrs.get("crs_wkt")
+    if not isinstance(crs_wkt, str) or not crs_wkt.strip():
+        raise ValueError("Dataset attribute 'crs_wkt' must contain a non-empty WKT string")
+    if crs_wkt.strip() == "XY location (unprojected)":
+        raise ValueError(
+            "GRASS's 'XY location (unprojected)' placeholder is not a valid CRS; "
+            "configure the location CRS or use a valid engineering CRS"
+        )
+    try:
+        CRS.from_wkt(crs_wkt)
+    except CRSError as error:
+        raise ValueError("Dataset attribute 'crs_wkt' is not valid WKT") from error
+
+
+def convert_relative_time_coordinates(ds: xr.Dataset) -> xr.Dataset:
+    """Convert xarray-GRASS relative time coordinates to timedelta64."""
+    converted_coords = {}
+    for coords_name, coords_values in ds.coords.items():
+        if not str(coords_name).startswith(("start_time", "end_time")):
+            continue
+        if np.issubdtype(coords_values.dtype, np.timedelta64):
+            continue
+
+        time_unit = coords_values.attrs.get("units")
+        try:
+            unit_seconds = RELATIVE_TIME_UNIT_SECONDS[time_unit]
+        except KeyError:
+            supported_units = ", ".join(RELATIVE_TIME_UNIT_SECONDS)
+            raise ValueError(
+                f"Relative time coordinate <{coords_name}> uses unsupported unit "
+                f"<{time_unit}>; supported units are {supported_units}"
+            ) from None
+
+        converted_values = coords_values.values * np.timedelta64(unit_seconds, "s")
+        converted_coord = coords_values.copy(data=converted_values)
+        converted_coord.attrs.pop("units")
+        converted_coord.encoding["units"] = time_unit
+        converted_coords[coords_name] = converted_coord
+
+    return ds.assign_coords(converted_coords)
+
+
 def to_zarr(
     cat_dict: Mapping[str, dict[str, list[str]]],
     grass_params: GrassParams,
@@ -221,26 +268,21 @@ def to_zarr(
     Write the Dataset to a temporary zarr store."""
 
     ds = read_all_maps(cat_dict, grass_params)
+    validate_crs(ds)
 
-    time_slices = {}
-    for coords_name, coords_values in ds.coords.items():
-        if "start_time" not in str(coords_name):
-            continue
-        if sim_config.temporal_type == TemporalType.RELATIVE:
-            time_unit = coords_values.attrs.get("units")
-            try:
-                unit_seconds = RELATIVE_TIME_UNIT_SECONDS[time_unit]
-            except KeyError:
-                supported_units = ", ".join(RELATIVE_TIME_UNIT_SECONDS)
-                raise ValueError(
-                    f"Relative time coordinate <{coords_name}> uses unsupported unit "
-                    f"<{time_unit}>; supported units are {supported_units}"
-                ) from None
-            duration = sim_config.end_time - sim_config.start_time
-            end_time = duration.total_seconds() / unit_seconds
-            time_slices[coords_name] = slice(0, end_time)
-        else:
-            time_slices[coords_name] = slice(sim_config.start_time, sim_config.end_time)
+    if sim_config.temporal_type == TemporalType.RELATIVE:
+        ds = convert_relative_time_coordinates(ds)
+        start_time = timedelta(0)
+        end_time = sim_config.end_time - sim_config.start_time
+    else:
+        start_time = sim_config.start_time
+        end_time = sim_config.end_time
+
+    time_slices = {
+        coords_name: slice(start_time, end_time)
+        for coords_name in ds.coords
+        if str(coords_name).startswith("start_time")
+    }
     ds_select = ds.sel(time_slices)
 
     # Validate and extract dimension names

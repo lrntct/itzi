@@ -7,11 +7,18 @@ from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import numpy as np
 import pytest
 from itzi_core.const import TemporalType
 from itzi_core.data_containers import SimulationConfig, SurfaceFlowParameters
 
 from itzi.grass_session import GrassParams
+
+LOCAL_CRS_WKT = (
+    'ENGCRS["Local engineering CRS",EDATUM["Unknown engineering datum"],'
+    'CS[Cartesian,2],AXIS["x",east,ORDER[1],LENGTHUNIT["metre",1]],'
+    'AXIS["y",north,ORDER[2],LENGTHUNIT["metre",1]]]'
+)
 
 
 def test_create_request_uses_project_slug(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -177,10 +184,20 @@ def test_to_zarr_slices_relative_coordinates_in_their_declared_units(
                 [0, 300, 600, 900],
                 {"units": "seconds"},
             ),
+            "end_time_rain": (
+                "start_time_rain",
+                [5, 10, 15, 20],
+                {"units": "minutes"},
+            ),
+            "end_time_inflow": (
+                "start_time_inflow",
+                [300, 600, 900, 1200],
+                {"units": "seconds"},
+            ),
             "y": [0],
             "x": [0],
         },
-        attrs={"history": "generated for test"},
+        attrs={"history": "generated for test", "crs_wkt": LOCAL_CRS_WKT},
     )
     relative_start = datetime.min.replace(tzinfo=UTC)
     sim_config = SimulationConfig(
@@ -197,17 +214,110 @@ def test_to_zarr_slices_relative_coordinates_in_their_declared_units(
         location="project",
         mapset="mapset",
     )
-    selected_datasets: list[xr.Dataset] = []
-
     monkeypatch.setattr(push, "read_all_maps", lambda *_args: dataset)
-    monkeypatch.setattr(
-        push.xr.Dataset,
-        "to_zarr",
-        lambda selected, _path: selected_datasets.append(selected),
+
+    zarr_path = tmp_path / "input.zarr"
+    push.to_zarr({}, grass_params, sim_config, tempdir=zarr_path)
+
+    selected = xr.open_zarr(zarr_path)
+    assert np.issubdtype(selected.start_time_rain.dtype, np.timedelta64)
+    assert np.issubdtype(selected.start_time_inflow.dtype, np.timedelta64)
+    assert np.issubdtype(selected.end_time_rain.dtype, np.timedelta64)
+    assert np.issubdtype(selected.end_time_inflow.dtype, np.timedelta64)
+    np.testing.assert_array_equal(
+        selected.start_time_rain.values,
+        np.array([0, 300, 600], dtype="timedelta64[s]"),
+    )
+    np.testing.assert_array_equal(
+        selected.start_time_inflow.values,
+        np.array([0, 300, 600], dtype="timedelta64[s]"),
     )
 
-    push.to_zarr({}, grass_params, sim_config, tempdir=tmp_path / "input.zarr")
 
-    selected = selected_datasets[0]
-    assert selected.start_time_rain.values.tolist() == [0, 5, 10]
-    assert selected.start_time_inflow.values.tolist() == [0, 300, 600]
+def test_to_zarr_preserves_absolute_datetime_coordinates(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import xarray as xr
+
+    from itzi.cloud import push
+
+    dataset = xr.Dataset(
+        data_vars={
+            "rain": (("start_time_rain", "y", "x"), [[[1]], [[2]], [[3]], [[4]]]),
+        },
+        coords={
+            "start_time_rain": np.array(
+                [
+                    "2025-01-01T12:00:00",
+                    "2025-01-01T12:05:00",
+                    "2025-01-01T12:10:00",
+                    "2025-01-01T12:15:00",
+                ],
+                dtype="datetime64[s]",
+            ),
+            "y": [0],
+            "x": [0],
+        },
+        attrs={"history": "generated for test", "crs_wkt": LOCAL_CRS_WKT},
+    )
+    sim_config = SimulationConfig(
+        start_time=datetime(2025, 1, 1, 12),
+        end_time=datetime(2025, 1, 1, 12, 10),
+        record_step=timedelta(minutes=5),
+        temporal_type=TemporalType.ABSOLUTE,
+        input_map_names={"rain": "rain"},
+        output_map_names={"h": "depth"},
+        surface_flow_parameters=SurfaceFlowParameters(),
+    )
+    grass_params = GrassParams(
+        grassdata=str(tmp_path / "grassdb"),
+        location="project",
+        mapset="mapset",
+    )
+    monkeypatch.setattr(push, "read_all_maps", lambda *_args: dataset)
+
+    zarr_path = tmp_path / "input.zarr"
+    push.to_zarr({}, grass_params, sim_config, tempdir=zarr_path)
+
+    selected = xr.open_zarr(zarr_path)
+    assert np.issubdtype(selected.start_time_rain.dtype, np.datetime64)
+    np.testing.assert_array_equal(
+        selected.start_time_rain.values,
+        np.array(
+            [
+                "2025-01-01T12:00:00",
+                "2025-01-01T12:05:00",
+                "2025-01-01T12:10:00",
+            ],
+            dtype="datetime64[s]",
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("crs_wkt", "error_match"),
+    [
+        (None, "non-empty WKT"),
+        ("", "non-empty WKT"),
+        ("XY location (unprojected)", "placeholder is not a valid CRS"),
+        ("not WKT", "not valid WKT"),
+    ],
+)
+def test_validate_crs_rejects_invalid_values(crs_wkt: str | None, error_match: str) -> None:
+    import xarray as xr
+
+    from itzi.cloud import push
+
+    attrs = {} if crs_wkt is None else {"crs_wkt": crs_wkt}
+
+    with pytest.raises(ValueError, match=error_match):
+        push.validate_crs(xr.Dataset(attrs=attrs))
+
+
+def test_validate_crs_accepts_engineering_crs() -> None:
+    import xarray as xr
+
+    from itzi.cloud import push
+
+    push.validate_crs(xr.Dataset(attrs={"crs_wkt": LOCAL_CRS_WKT}))
