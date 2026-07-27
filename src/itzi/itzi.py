@@ -58,7 +58,7 @@ if TYPE_CHECKING:
     from itzi.providers.grass_interface import GrassInterface
 
 
-def main(argv: list[str] | None = None) -> None:
+def main(argv: list[str] | None = None) -> int:
     """argv: alternative CLI arguments, used for testing (default to sys.argv)"""
     args = cli_parser.build_parser().parse_args(argv)
 
@@ -67,19 +67,24 @@ def main(argv: list[str] | None = None) -> None:
         "version": itzi_version,
     }
 
-    cloud_command_mapper: dict[str, Callable] = {
-        "help": cli_parser.print_cloud_help,
-        "login": itzi_cloud_login,
-        "push": itzi_cloud_push,
-        "status": itzi_cloud_status,
-        "pull": itzi_cloud_pull,
-    }
+    try:
+        cloud_command_mapper: dict[str, Callable] = {
+            "help": cli_parser.print_cloud_help,
+            "login": itzi_cloud_login,
+            "push": itzi_cloud_push,
+            "status": itzi_cloud_status,
+            "pull": itzi_cloud_pull,
+        }
 
-    if args.command == "cloud":
-        cloud_command_mapper[args.cloud_handler](args)
-        return
+        if args.command == "cloud":
+            cloud_command_mapper[args.cloud_handler](args)
+            return 0
 
-    command_mapper[args.command](args)
+        command_mapper[args.command](args)
+        return 0
+
+    except msgr.FatalError:
+        return 1
 
 
 class SimulationRunner:
@@ -229,6 +234,8 @@ def sim_runner_worker(conf_file: str, hotstart_file: str | None):
                 hotstart_file,
             )
             sim_runner.run().finalize()
+    except msgr.FatalError:
+        return
     except Exception:
         msgr.warning("Error during execution: {}".format(traceback.format_exc()))
 
