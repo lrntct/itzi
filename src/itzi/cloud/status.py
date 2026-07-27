@@ -125,7 +125,7 @@ def display_simulations_list(tasks: list[SimulationTaskSchema]) -> None:
         created = format_local_datetime(task.created_on)
         updated = format_local_datetime(task.last_updated)
         team = task.team[:14] if task.team else "-"
-        project = task.project[:14] if task.project else "-"
+        project = task.project_slug[:14] if task.project_slug else "-"
         input_size = format_bytes(task.input_bytes)
         results_size = format_bytes(task.results_bytes)
 

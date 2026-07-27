@@ -82,7 +82,7 @@ class FakeCloudState:
         self.created_requests.append(metadata)
         self.simulations[fingerprint] = {
             "team": "integration-tests",
-            "project": "test-project",
+            "project_slug": "test-project",
             "created_on": now,
             "last_updated": now,
             "fingerprint": fingerprint,

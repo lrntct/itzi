@@ -34,6 +34,7 @@ from itzi.cloud.grass_utils import get_grass_params_from_env
 from itzi.cloud.schemas import (
     DomainInfo,
     InputInfo,
+    SimulationConfigSchema,
     SimulationRequestSchema,
     SimulationResponseSchema,
 )
@@ -328,7 +329,7 @@ def create_request(
     request_data = SimulationRequestSchema(
         project_slug=project_slug,
         force_rerun=force,
-        sim_config=input_info.sim_config,
+        sim_config=SimulationConfigSchema.model_validate(input_info.sim_config),
         dataset_hash=input_info.dataset_hash,
         dataset_bytes=input_info.dataset_bytes,
         domain_info=input_info.domain_info,
@@ -361,13 +362,15 @@ def request_simulation(
         return SimulationResponseSchema.model_validate_json(response.text)
     elif response.status_code == 409:
         response_data = json.loads(response.text)
-        raise RuntimeError(
-            "An identical simulation is already in progress. "
-            f"Fingerprint: {response_data['existing_fingerprint']}, "
-            f"status: {response_data['status']}."
-        )
+        if "existing_fingerprint" in response_data and "status" in response_data:
+            raise RuntimeError(
+                "An identical simulation is already in progress. "
+                f"Fingerprint: {response_data['existing_fingerprint']}, "
+                f"status: {response_data['status']}."
+            )
+        raise RuntimeError(f"Simulation request conflicted: {response.text}")
     else:
-        raise RuntimeError(f"Something went wrong: {response}")
+        raise RuntimeError(f"Simulation request failed ({response.status_code}): {response.text}")
 
 
 def upload_input(

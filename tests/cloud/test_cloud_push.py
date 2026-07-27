@@ -52,6 +52,37 @@ def test_create_request_uses_project_slug(monkeypatch: pytest.MonkeyPatch, tmp_p
 
     assert request.project_slug == "flood-studies"
     assert "project_id" not in request.model_dump()
+    assert request.sim_config.stats_file == ""
+    assert request.sim_config.surface_flow_parameters.vrouting == 0.1
+    assert "hotstart_config" not in request.sim_config.model_dump()
+    assert set(request.sim_config.model_dump()) == {
+        "start_time",
+        "end_time",
+        "record_step",
+        "temporal_type",
+        "input_map_names",
+        "output_map_names",
+        "surface_flow_parameters",
+        "stats_file",
+        "dtinf",
+        "infiltration_model",
+        "swmm_inp",
+        "drainage_output",
+        "orifice_coeff",
+        "free_weir_coeff",
+        "submerged_weir_coeff",
+    }
+    assert set(request.sim_config.surface_flow_parameters.model_dump()) == {
+        "hmin",
+        "cfl",
+        "theta",
+        "g",
+        "vrouting",
+        "dtmax",
+        "slope_threshold",
+        "max_slope",
+        "max_error",
+    }
     assert request_dataset_path == dataset_path
     assert request_grass_params == grass_params
 
