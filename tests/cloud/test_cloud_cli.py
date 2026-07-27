@@ -9,6 +9,7 @@ import pytest
 
 from itzi.cloud.cli import (
     itzi_cloud_login,
+    itzi_cloud_project,
     itzi_cloud_pull,
     itzi_cloud_push,
     itzi_cloud_status,
@@ -171,10 +172,12 @@ def test_itzi_cloud_push_submits_and_saves_metadata(monkeypatch):
     )
     monkeypatch.setattr("itzi.cloud.cli.msgr.message", messages.append)
 
-    itzi_cloud_push(argparse.Namespace(project=42, force=True, config_file=["sim.ini"]))
+    itzi_cloud_push(
+        argparse.Namespace(project="flood-studies", force=True, config_file=["sim.ini"])
+    )
 
     assert os.environ["ITZI_VERBOSE"] == str(VerbosityLevel.MESSAGE)
-    assert calls["create_request"] == [(42, "sim.ini", True)]
+    assert calls["create_request"] == [("flood-studies", "sim.ini", True)]
     assert calls["request_simulation"] == [("token-123", request_data)]
     assert calls["upload_input"] == [
         (
@@ -233,7 +236,9 @@ def test_itzi_cloud_push_warns_when_metadata_save_fails(monkeypatch):
     )
     monkeypatch.setattr("itzi.cloud.cli.msgr.warning", warnings.append)
 
-    itzi_cloud_push(argparse.Namespace(project=42, force=False, config_file=["sim.ini"]))
+    itzi_cloud_push(
+        argparse.Namespace(project="flood-studies", force=False, config_file=["sim.ini"])
+    )
 
     assert warnings == ["Failed to save metadata: boom"]
 
@@ -269,12 +274,14 @@ def test_itzi_cloud_push_warns_when_submission_fails(monkeypatch):
     )
     monkeypatch.setattr("itzi.cloud.cli.msgr.warning", warnings.append)
 
-    itzi_cloud_push(argparse.Namespace(project=42, force=False, config_file=["sim.ini"]))
+    itzi_cloud_push(
+        argparse.Namespace(project="flood-studies", force=False, config_file=["sim.ini"])
+    )
 
     assert warnings == ["sim.ini: Error during cloud submission: boom"]
 
 
-def test_itzi_cloud_push_requires_project_id(monkeypatch):
+def test_itzi_cloud_push_requires_project_slug(monkeypatch):
     install_stub_module(
         monkeypatch,
         "itzi.cloud.auth",
@@ -299,7 +306,7 @@ def test_itzi_cloud_push_requires_project_id(monkeypatch):
         lambda message: (_ for _ in ()).throw(RuntimeError(message)),
     )
 
-    with pytest.raises(RuntimeError, match="Cloud project ID is required"):
+    with pytest.raises(RuntimeError, match="Cloud project slug is required"):
         itzi_cloud_push(argparse.Namespace(project=None, force=False, config_file=["sim.ini"]))
 
 
@@ -352,6 +359,31 @@ def test_itzi_cloud_status_displays_simulation_list(monkeypatch):
 
     assert calls["get_simulations_list"] == ["token-123"]
     assert calls["display"] == [[{"fingerprint": "fp-123"}]]
+
+
+def test_itzi_cloud_project_displays_project_list(monkeypatch):
+    calls = {"get_projects_list": [], "display": []}
+    monkeypatch.delenv("ITZI_VERBOSE", raising=False)
+    install_stub_module(
+        monkeypatch,
+        "itzi.cloud.auth",
+        check_login=lambda: "user@example.com",
+        get_token=lambda email: "token-123",
+    )
+    install_stub_module(
+        monkeypatch,
+        "itzi.cloud.project",
+        get_projects_list=lambda session_token: (
+            calls["get_projects_list"].append(session_token) or [{"id": 42}]
+        ),
+        display_projects_list=lambda projects: calls["display"].append(projects),
+    )
+
+    itzi_cloud_project(argparse.Namespace(list=True))
+
+    assert os.environ["ITZI_VERBOSE"] == str(VerbosityLevel.MESSAGE)
+    assert calls["get_projects_list"] == ["token-123"]
+    assert calls["display"] == [[{"id": 42}]]
 
 
 def test_itzi_cloud_pull_downloads_and_loads_results(monkeypatch):

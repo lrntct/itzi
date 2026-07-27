@@ -20,16 +20,18 @@ def test_cloud_login_parser_accepts_options():
 
 
 def test_cloud_push_parser_accepts_batch_and_flags():
-    args = build_parser().parse_args(["cloud", "push", "-p", "42", "-f", "a.ini", "b.ini"])
+    args = build_parser().parse_args(
+        ["cloud", "push", "-p", "flood-studies", "-f", "a.ini", "b.ini"]
+    )
 
     assert args.command == "cloud"
     assert args.cloud_command == "push"
-    assert args.project == 42
+    assert args.project == "flood-studies"
     assert args.force is True
     assert args.config_file == ["a.ini", "b.ini"]
 
 
-def test_cloud_push_parser_requires_project_id():
+def test_cloud_push_parser_requires_project_slug():
     with pytest.raises(SystemExit):
         build_parser().parse_args(["cloud", "push", "sim.ini"])
 
@@ -40,6 +42,19 @@ def test_cloud_status_parser_accepts_optional_fingerprint():
     assert args.command == "cloud"
     assert args.cloud_command == "status"
     assert args.fingerprint == "fp-123"
+
+
+def test_cloud_project_parser_accepts_list_option():
+    args = build_parser().parse_args(["cloud", "project", "--list"])
+
+    assert args.command == "cloud"
+    assert args.cloud_command == "project"
+    assert args.list is True
+
+
+def test_cloud_project_parser_requires_an_action():
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["cloud", "project"])
 
 
 def test_cloud_pull_parser_accepts_overrides_and_overwrite():
@@ -74,12 +89,12 @@ def test_main_prints_cloud_help_without_subcommand(capsys):
     assert args.cloud_command is None
     assert args.cloud_handler == "help"
 
-    assert main(["cloud"]) is None
+    assert main(["cloud"]) == 0
 
     captured = capsys.readouterr()
     assert "usage:" in captured.out
     assert " cloud [-h]" in captured.out
-    assert "{login,push,status,pull}" in captured.out
+    assert "{login,push,status,project,pull}" in captured.out
     assert captured.err == ""
 
 
@@ -87,8 +102,9 @@ def test_main_prints_cloud_help_without_subcommand(capsys):
     ("argv", "expected_handler"),
     [
         (["cloud", "login"], "itzi_cloud_login"),
-        (["cloud", "push", "-p", "42", "sim.ini"], "itzi_cloud_push"),
+        (["cloud", "push", "-p", "flood-studies", "sim.ini"], "itzi_cloud_push"),
         (["cloud", "status"], "itzi_cloud_status"),
+        (["cloud", "project", "--list"], "itzi_cloud_project"),
         (["cloud", "pull", "fp-123"], "itzi_cloud_pull"),
     ],
 )
@@ -99,6 +115,7 @@ def test_main_dispatches_cloud_commands(monkeypatch, argv, expected_handler):
         "itzi_cloud_login",
         "itzi_cloud_push",
         "itzi_cloud_status",
+        "itzi_cloud_project",
         "itzi_cloud_pull",
     ]:
         monkeypatch.setattr(

@@ -354,7 +354,7 @@ def _configure_cloud_test_environment(
     )
     dataset_hash = push.md5_base64(input_archive)
     request_data = SimulationRequestSchema(
-        project_id=42,
+        project_slug="test-project",
         force_rerun=True,
         sim_config=SimulationConfig(
             start_time=datetime(2025, 1, 1, 12, tzinfo=UTC),
@@ -439,7 +439,9 @@ def test_cloud_roundtrip_with_fake_provider(
         )
     )
 
-    itzi_cloud_push(argparse.Namespace(project=42, force=True, config_file=["sim.ini"]))
+    itzi_cloud_push(
+        argparse.Namespace(project="test-project", force=True, config_file=["sim.ini"])
+    )
 
     metadata_file = ctx.metadata_storage.get_metadata_file_path()
     stored_metadata = json.loads(metadata_file.read_text())
@@ -508,7 +510,9 @@ def test_cloud_push_warns_on_conflicting_simulation(
         )
     )
 
-    itzi_cloud_push(argparse.Namespace(project=42, force=True, config_file=["sim.ini"]))
+    itzi_cloud_push(
+        argparse.Namespace(project="test-project", force=True, config_file=["sim.ini"])
+    )
 
     assert warnings == [
         "sim.ini: Error during cloud submission: An identical simulation is already in progress. "
@@ -537,7 +541,9 @@ def test_cloud_pull_surfaces_api_detail_when_results_are_unavailable(
             status=False,
         )
     )
-    itzi_cloud_push(argparse.Namespace(project=42, force=True, config_file=["sim.ini"]))
+    itzi_cloud_push(
+        argparse.Namespace(project="test-project", force=True, config_file=["sim.ini"])
+    )
 
     fake_cloud_server.state.results_lookup_errors["fp-001"] = (
         409,

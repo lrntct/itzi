@@ -53,10 +53,9 @@ def add_cloud_subcommands(cloud_parser: argparse.ArgumentParser) -> None:
     cloud_push_parser.add_argument(
         "-p",
         "--project",
-        type=int,
         required=True,
-        metavar="ID",
-        help="ID of the cloud project to attach the simulation to.",
+        metavar="SLUG",
+        help="Slug of the cloud project to attach the simulation to.",
     )
     cloud_push_parser.add_argument("-f", "--force", action="store_true", help="Force re-run.")
     cloud_push_parser.add_argument(
@@ -73,6 +72,16 @@ def add_cloud_subcommands(cloud_parser: argparse.ArgumentParser) -> None:
         "fingerprint",
         nargs="?",
         help="Optional simulation fingerprint to query a specific simulation.",
+    )
+
+    cloud_project_parser = cloud_subparser.add_parser("project", help="Manage cloud projects.")
+    cloud_project_parser.set_defaults(cloud_handler="project")
+    cloud_project_parser.add_argument(
+        "-l",
+        "--list",
+        action="store_true",
+        required=True,
+        help="List projects available to the authenticated user.",
     )
 
     cloud_pull_parser = cloud_subparser.add_parser(

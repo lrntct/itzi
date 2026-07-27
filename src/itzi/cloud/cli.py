@@ -61,7 +61,7 @@ def itzi_cloud_push(cli_args) -> None:
     os.environ["ITZI_VERBOSE"] = str(VerbosityLevel.MESSAGE)
 
     if cli_args.project is None:
-        msgr.fatal("Cloud project ID is required. Use --project <id>.")
+        msgr.fatal("Cloud project slug is required. Use --project <slug>.")
 
     email = check_login()
     session_token = get_token(email)
@@ -116,6 +116,21 @@ def itzi_cloud_status(cli_args) -> None:
         # List all simulations
         tasks = get_simulations_list(session_token=get_token(email))
         display_simulations_list(tasks)
+
+
+def itzi_cloud_project(cli_args: argparse.Namespace) -> None:
+    """Manage cloud projects."""
+    from itzi.cloud.auth import check_login, get_token
+    from itzi.cloud.project import display_projects_list, get_projects_list
+
+    os.environ["ITZI_VERBOSE"] = str(VerbosityLevel.MESSAGE)
+
+    if not cli_args.list:
+        msgr.fatal("No project action specified. Use --list.")
+
+    email = check_login()
+    projects = get_projects_list(session_token=get_token(email))
+    display_projects_list(projects)
 
 
 def resolve_cloud_pull_grass_params(cli_args: argparse.Namespace) -> tuple[GrassParams, str]:

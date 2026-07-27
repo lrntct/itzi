@@ -282,7 +282,7 @@ def list_input_maps(
 
 
 def create_request(
-    project_id: int, conf_file_path: str | Path, force: bool = False
+    project_slug: str, conf_file_path: str | Path, force: bool = False
 ) -> tuple[SimulationRequestSchema, Path, GrassParams]:
     """Create a simulation request.
 
@@ -290,8 +290,8 @@ def create_request(
 
     Parameters
     ----------
-    project_id : int
-        Cloud project ID.
+    project_slug : str
+        Cloud project slug.
     conf_file_path : str | Path
         Path to the configuration file.
 
@@ -312,7 +312,7 @@ def create_request(
     input_info = pack_input(sim_config, grass_params)
 
     request_data = SimulationRequestSchema(
-        project_id=project_id,
+        project_slug=project_slug,
         force_rerun=force,
         sim_config=input_info.sim_config,
         dataset_hash=input_info.dataset_hash,

@@ -61,7 +61,7 @@ class SimulationTaskSchema(BaseModel):
 class SimulationRequestSchema(BaseModel):
     """Schema for requesting a simulation."""
 
-    project_id: int
+    project_slug: str
     force_rerun: bool = False
     sim_config: SimulationConfig
     dataset_hash: str
@@ -94,13 +94,11 @@ class ResultsDownloadResponseSchema(BaseModel):
 
 
 class TeamSchema(BaseModel):
-    id: int
     name: str
     slug: str
 
 
 class ProjectSchema(BaseModel):
-    id: int
     name: str
     slug: str
     team: TeamSchema

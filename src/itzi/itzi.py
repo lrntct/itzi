@@ -47,6 +47,7 @@ from itzi.cloud.cli import (
     itzi_cloud_login,
     itzi_cloud_push,
     itzi_cloud_status,
+    itzi_cloud_project,
     itzi_cloud_pull,
 )
 
@@ -72,6 +73,7 @@ def main(argv: list[str] | None = None) -> int:
             "login": itzi_cloud_login,
             "push": itzi_cloud_push,
             "status": itzi_cloud_status,
+            "project": itzi_cloud_project,
             "pull": itzi_cloud_pull,
         }
 
