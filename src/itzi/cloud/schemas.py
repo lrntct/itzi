@@ -17,7 +17,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict
 
-from itzi.data_containers import SimulationConfig
+from itzi_core.data_containers import SimulationConfig
 
 
 class DomainInfo(BaseModel):

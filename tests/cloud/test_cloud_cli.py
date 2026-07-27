@@ -14,9 +14,9 @@ from itzi.cloud.cli import (
     itzi_cloud_status,
     resolve_cloud_pull_grass_params,
 )
-from itzi.const import VerbosityLevel
-from itzi.data_containers import GrassParams
-from itzi.itzi_error import ItziFatal
+from itzi.messenger import VerbosityLevel
+from itzi.grass_session import GrassParams
+from itzi_core.itzi_error import ItziFatal
 
 
 def install_stub_module(monkeypatch, module_name: str, **attrs) -> ModuleType:

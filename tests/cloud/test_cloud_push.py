@@ -9,8 +9,10 @@ import types
 
 import pytest
 
-from itzi.const import TemporalType
-from itzi.data_containers import GrassParams, SimulationConfig, SurfaceFlowParameters
+from itzi_core.const import TemporalType
+from itzi_core.data_containers import SimulationConfig, SurfaceFlowParameters
+
+from itzi.grass_session import GrassParams
 
 
 @pytest.mark.cloud

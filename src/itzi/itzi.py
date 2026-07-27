@@ -37,14 +37,12 @@ from multiprocessing import Process
 from typing import TYPE_CHECKING, Callable
 
 import numpy as np
+from itzi_core.simulation_builder import SimulationBuilder
 
 from itzi.configreader import ConfigReader
-import itzi.itzi_error as itzi_error
 import itzi.messenger as msgr
-from itzi.const import VerbosityLevel
+from itzi.messenger import VerbosityLevel
 from itzi import cli_parser
-from itzi.profiler import profile_context
-from itzi.simulation_builder import SimulationBuilder
 from itzi.grass_session import GrassSessionManager
 from itzi.cloud.cli import (
     itzi_cloud_login,
@@ -54,9 +52,10 @@ from itzi.cloud.cli import (
 )
 
 if TYPE_CHECKING:
-    from itzi.data_containers import SimulationConfig, GrassParams
+    from itzi_core.data_containers import SimulationConfig
+    from itzi_core.simulation import Simulation
+    from itzi.grass_session import GrassParams
     from itzi.providers.grass_interface import GrassInterface
-    from itzi.simulation import Simulation
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -97,7 +96,7 @@ class SimulationRunner:
         self.sim: Simulation
 
         # display parameters (if verbose)
-        sim_config.display_sim_param()
+        msgr.display_sim_param(sim_config)
 
         # Check GRASS version
         import grass.script as gscript
@@ -224,17 +223,12 @@ def sim_runner_worker(conf_file: str, hotstart_file: str | None):
         sim_params = conf_data.get_sim_params()
         grass_params = conf_data.get_grass_params()
         with GrassSessionManager(grass_params):
-            with profile_context():
-                sim_runner = SimulationRunner(
-                    sim_params,
-                    grass_params,
-                    hotstart_file,
-                )
-                sim_runner.run().finalize()
-    except itzi_error.ItziError:
-        # ItziError exceptions are already logged at their source (e.g., msgr.fatal())
-        # The parent process will report the failure via itzi_run_one() exit code
-        pass
+            sim_runner = SimulationRunner(
+                sim_params,
+                grass_params,
+                hotstart_file,
+            )
+            sim_runner.run().finalize()
     except Exception:
         msgr.warning("Error during execution: {}".format(traceback.format_exc()))
 

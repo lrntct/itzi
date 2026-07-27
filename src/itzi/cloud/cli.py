@@ -20,10 +20,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import itzi.messenger as msgr
-from itzi.const import VerbosityLevel
+from itzi.messenger import VerbosityLevel
 
 if TYPE_CHECKING:
-    from itzi.data_containers import GrassParams
+    from itzi.grass_session import GrassParams
 
 
 def itzi_cloud_login(cli_args) -> None:
@@ -121,7 +121,7 @@ def resolve_cloud_pull_grass_params(cli_args: argparse.Namespace) -> tuple[Grass
     """Resolve where cloud pull should load results in GRASS."""
     from itzi.cloud.grass_utils import get_active_grass_params
     from itzi.cloud.metadata_storage import load_simulation_metadata
-    from itzi.data_containers import GrassParams
+    from itzi.grass_session import GrassParams
 
     # 1. Active GRASS Session (highest priority)
     session_params = get_active_grass_params()

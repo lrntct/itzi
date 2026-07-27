@@ -18,7 +18,7 @@ from pathlib import Path
 import importlib.util
 import os
 
-from itzi.data_containers import GrassParams
+from itzi.grass_session import GrassParams
 
 
 class GrassParamsSource(Enum):

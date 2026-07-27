@@ -18,11 +18,13 @@ from urllib.parse import urlparse
 
 import pytest
 
+from itzi_core.itzi_error import ItziFatal
+from itzi_core.data_containers import SimulationConfig, SurfaceFlowParameters
+
 from itzi.cloud.cli import itzi_cloud_login, itzi_cloud_pull, itzi_cloud_push, itzi_cloud_status
 from itzi.cloud.schemas import DomainInfo, SimulationRequestSchema
 from itzi.const import TemporalType
-from itzi.data_containers import GrassParams, SimulationConfig, SurfaceFlowParameters
-from itzi.itzi_error import ItziFatal
+from itzi.grass_session import GrassParams
 
 
 def _build_tar_archive(root_name: str, files: dict[str, bytes]) -> bytes:
