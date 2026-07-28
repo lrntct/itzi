@@ -86,6 +86,7 @@ def main(argv: list[str] | None = None) -> int:
 
     except msgr.FatalError:
         return 1
+    return 0
 
 
 class SimulationRunner:
