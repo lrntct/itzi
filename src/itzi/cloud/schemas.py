@@ -67,7 +67,6 @@ class SurfaceFlowParametersSchema(BaseModel):
     cfl: float
     theta: float
     g: float
-    vrouting: float
     dtmax: float
     slope_threshold: float
     max_slope: float
@@ -84,7 +83,6 @@ class SimulationConfigSchema(BaseModel):
     input_map_names: dict[str, str | None]
     output_map_names: dict[str, str | None]
     surface_flow_parameters: SurfaceFlowParametersSchema
-    stats_file: str
     dtinf: float
     infiltration_model: InfiltrationModelType
     swmm_inp: str | None
@@ -102,7 +100,6 @@ class SimulationConfigSchema(BaseModel):
 
         normalized = value.model_dump(mode="python")
         normalized.pop("hotstart_config", None)
-        normalized["stats_file"] = str(normalized.get("stats_file") or "")
         if normalized.get("swmm_inp") is not None:
             normalized["swmm_inp"] = str(normalized["swmm_inp"])
 
