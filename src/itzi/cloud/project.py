@@ -55,12 +55,9 @@ def display_projects_list(projects: list[ProjectSchema]) -> None:
         msgr.message("No projects found.")
         return
 
-    header = f"{'PROJECT':<25} {'PROJECT SLUG':<25} {'TEAM':<25} {'TEAM SLUG':<25}"
+    header = f"{'PROJECT ID':<28} {'PROJECT NAME':<25}"
     msgr.message(header)
 
     for project in projects:
-        row = (
-            f"{project.name:<25} {project.slug:<25} "
-            f"{project.team.name:<25} {project.team.slug:<25}"
-        )
+        row = f"{project.project_id:<28} {project.name:<25} "
         msgr.message(row)

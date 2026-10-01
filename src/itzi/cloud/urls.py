@@ -16,13 +16,16 @@ from __future__ import annotations
 
 import os
 
-
 DEFAULT_API_BASE = "http://localhost:8000"
 API_BASE_ENV_VAR = "ITZI_CLOUD_API_BASE"
 
 
 def get_api_base() -> str:
     return os.environ.get(API_BASE_ENV_VAR, DEFAULT_API_BASE).rstrip("/")
+
+
+def get_execution_api_base() -> str:
+    return f"{get_api_base()}/execution-api/v1"
 
 
 def get_login_endpoint() -> str:
@@ -38,7 +41,7 @@ def get_simulations_endpoint() -> str:
 
 
 def get_projects_endpoint() -> str:
-    return f"{get_api_base()}/project-api/projects"
+    return f"{get_execution_api_base()}/projects"
 
 
 # Backward-compatible module attributes for callers that only need the default values.

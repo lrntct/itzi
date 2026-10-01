@@ -281,7 +281,7 @@ def test_itzi_cloud_push_warns_when_submission_fails(monkeypatch):
     assert warnings == ["sim.ini: Error during cloud submission: boom"]
 
 
-def test_itzi_cloud_push_requires_project_slug(monkeypatch):
+def test_itzi_cloud_push_requires_project_id(monkeypatch):
     install_stub_module(
         monkeypatch,
         "itzi.cloud.auth",
@@ -306,7 +306,7 @@ def test_itzi_cloud_push_requires_project_slug(monkeypatch):
         lambda message: (_ for _ in ()).throw(RuntimeError(message)),
     )
 
-    with pytest.raises(RuntimeError, match="Cloud project slug is required"):
+    with pytest.raises(RuntimeError, match="Cloud project ID is required"):
         itzi_cloud_push(argparse.Namespace(project=None, force=False, config_file=["sim.ini"]))
 
 
@@ -374,7 +374,7 @@ def test_itzi_cloud_project_displays_project_list(monkeypatch):
         monkeypatch,
         "itzi.cloud.project",
         get_projects_list=lambda session_token: (
-            calls["get_projects_list"].append(session_token) or [{"id": 42}]
+            calls["get_projects_list"].append(session_token) or [{"project_id": "proj-abc123"}]
         ),
         display_projects_list=lambda projects: calls["display"].append(projects),
     )
@@ -383,7 +383,7 @@ def test_itzi_cloud_project_displays_project_list(monkeypatch):
 
     assert os.environ["ITZI_VERBOSE"] == str(VerbosityLevel.MESSAGE)
     assert calls["get_projects_list"] == ["token-123"]
-    assert calls["display"] == [[{"id": 42}]]
+    assert calls["display"] == [[{"project_id": "proj-abc123"}]]
 
 
 def test_itzi_cloud_pull_downloads_and_loads_results(monkeypatch):

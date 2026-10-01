@@ -3,7 +3,7 @@
 import json
 from types import SimpleNamespace
 
-from itzi.cloud import project
+from itzi.cloud import project, urls
 from itzi.cloud.schemas import ProjectSchema, TeamSchema
 
 
@@ -26,55 +26,49 @@ class FakeSession:
 def test_get_projects_list_uses_session_token_and_validates_response(monkeypatch) -> None:
     response_data = [
         {
-            "id": 42,
+            "project_id": "proj-abc123",
             "name": "Flood Studies",
-            "slug": "flood-studies",
-            "team": {"id": 7, "name": "Hydrology", "slug": "hydrology"},
+            "team": {"team_id": "team-xyz987", "name": "Hydrology"},
         }
     ]
     session = FakeSession(
         SimpleNamespace(status_code=200, reason="OK", text=json.dumps(response_data))
     )
     monkeypatch.setattr(project.requests, "Session", lambda: session)
+    monkeypatch.setenv(urls.API_BASE_ENV_VAR, "https://example.test/")
 
-    projects = project.get_projects_list("token-123", url="https://example.test/projects")
+    projects = project.get_projects_list("token-123")
 
     assert projects == [
         ProjectSchema(
-            id=42,
+            project_id="proj-abc123",
             name="Flood Studies",
-            slug="flood-studies",
-            team=TeamSchema(id=7, name="Hydrology", slug="hydrology"),
+            team=TeamSchema(team_id="team-xyz987", name="Hydrology"),
         )
     ]
     assert session.requests == [
-        ("https://example.test/projects", {"X-Session-Token": "token-123"})
+        ("https://example.test/execution-api/v1/projects", {"X-Session-Token": "token-123"})
     ]
+    assert urls.get_execution_api_base() == "https://example.test/execution-api/v1"
 
 
-def test_display_projects_list_includes_project_and_team_details(monkeypatch) -> None:
+def test_display_projects_list_includes_project_details(monkeypatch) -> None:
     messages = []
     monkeypatch.setattr(project.msgr, "message", messages.append)
 
     project.display_projects_list(
         [
             ProjectSchema(
-                id=42,
+                project_id="proj-abc123",
                 name="Flood Studies",
-                slug="flood-studies",
-                team=TeamSchema(id=7, name="Hydrology", slug="hydrology"),
+                team=TeamSchema(team_id="team-xyz987", name="Hydrology"),
             )
         ]
     )
 
-    assert "PROJECT" in messages[0]
-    assert "TEAM" in messages[0]
-    assert "42" not in messages[0]
-    assert "42" not in messages[1]
+    assert "PROJECT ID" in messages[0]
+    assert "proj-abc123" in messages[1]
     assert "Flood Studies" in messages[1]
-    assert "flood-studies" in messages[1]
-    assert "Hydrology" in messages[1]
-    assert "hydrology" in messages[1]
 
 
 def test_display_projects_list_reports_empty_result(monkeypatch) -> None:

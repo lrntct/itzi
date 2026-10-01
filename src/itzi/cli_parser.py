@@ -53,8 +53,8 @@ def add_cloud_subcommands(cloud_parser: argparse.ArgumentParser) -> None:
         "-p",
         "--project",
         required=True,
-        metavar="SLUG",
-        help="Slug of the cloud project to attach the simulation to.",
+        metavar="PROJECT_ID",
+        help="Project ID (from cloud project --list).",
     )
     cloud_push_parser.add_argument("-f", "--force", action="store_true", help="Force re-run.")
     cloud_push_parser.add_argument(

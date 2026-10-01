@@ -150,11 +150,11 @@ class ResultsDownloadResponseSchema(BaseModel):
 
 
 class TeamSchema(BaseModel):
+    team_id: str
     name: str
-    slug: str
 
 
 class ProjectSchema(BaseModel):
+    project_id: str
     name: str
-    slug: str
     team: TeamSchema
