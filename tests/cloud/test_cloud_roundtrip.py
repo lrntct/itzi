@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import hashlib
 import io
 import json
 import tarfile
@@ -65,6 +67,18 @@ class FakeCloudState:
         self.ensembles_by_key: dict[str, dict[str, str]] = {}
         self.create_conflict = False
         self.lose_create_response = False
+        self.upload_instruction_requests: list[tuple[str, dict[str, Any], str]] = []
+        self.uploads: list[tuple[str, bytes, dict[str, str]]] = []
+        self.confirm_requests: list[tuple[str, dict[str, Any], str]] = []
+        self.transfers: dict[str, str] = {}
+        self.confirmed: dict[str, dict[str, Any]] = {}
+        self.storage_entitlement_error = False
+        self.expired_instructions = False
+        self.put_error = False
+        self.lose_put_response = False
+        self.confirm_error = False
+        self.lose_confirm_response = False
+        self.instruction_conflict = False
 
 
 class FakeCloudServer(ThreadingHTTPServer):
@@ -83,6 +97,87 @@ class FakeCloudRequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = urlparse(self.path).path
+        if path.startswith("/execution-api/v1/inputs/"):
+            if not self._require_token():
+                return
+            input_id, _, action = path.removeprefix("/execution-api/v1/inputs/").partition("/")
+            payload = self._read_json()
+            if action == "upload-instructions":
+                self.server.state.upload_instruction_requests.append(
+                    (input_id, payload, self.headers.get("X-Session-Token", ""))
+                )
+                if self.server.state.storage_entitlement_error:
+                    self._send_json(
+                        429,
+                        {
+                            "detail": "Not enough storage",
+                            "required_bytes": 100,
+                            "available_bytes": 5,
+                        },
+                    )
+                    return
+                if (
+                    self.server.state.instruction_conflict
+                    or input_id in self.server.state.confirmed
+                ):
+                    self._send_json(409, {"detail": "New upload instructions not permitted"})
+                    return
+                transfer_id = f"transfer-{len(self.server.state.upload_instruction_requests)}"
+                self.server.state.transfers[input_id] = transfer_id
+                expiry = datetime.now(UTC) + timedelta(
+                    seconds=-10 if self.server.state.expired_instructions else 900
+                )
+                self._send_json(
+                    200,
+                    {
+                        "input_id": input_id,
+                        "transfer_id": transfer_id,
+                        "method": "PUT",
+                        "url": f"{self.server.base_url}/uploads/{transfer_id}",
+                        "headers": {
+                            "Content-MD5": payload["content_md5_base64"],
+                            "x-upload-token": "signed-only",
+                        },
+                        "expires_at": expiry.isoformat(),
+                        "size_bytes": payload["size_bytes"],
+                        "content_type": "application/zstd",
+                    },
+                )
+                return
+            if action == "confirm":
+                self.server.state.confirm_requests.append(
+                    (input_id, payload, self.headers.get("X-Session-Token", ""))
+                )
+                if self.server.state.confirm_error:
+                    self._send_json(503, {"detail": "Confirmation unavailable"})
+                    return
+                transfer_id = self.server.state.transfers.get(input_id)
+                uploaded = next(
+                    (body for key, body, _ in self.server.state.uploads if key == transfer_id),
+                    None,
+                )
+                if (
+                    uploaded is None
+                    or payload["transfer_id"] != transfer_id
+                    or payload["size_bytes"] != len(uploaded)
+                    or payload["sha256"] != hashlib.sha256(uploaded).hexdigest()
+                ):
+                    self._send_json(422, {"detail": "Upload digest or transfer mismatch"})
+                    return
+                self.server.state.confirmed[input_id] = payload
+                if self.server.state.lose_confirm_response:
+                    self.server.state.lose_confirm_response = False
+                    self._send_json(503, {"detail": "Response lost after confirmation"})
+                    return
+                self._send_json(
+                    200,
+                    {
+                        "input_id": input_id,
+                        "state": "validating",
+                        "state_changed_at": datetime.now(UTC).isoformat(),
+                    },
+                )
+                return
         if path.startswith("/execution-api/v1/projects/") and path.endswith("/ensembles"):
             if not self._require_token():
                 return
@@ -120,6 +215,24 @@ class FakeCloudRequestHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         path = urlparse(self.path).path
+        if path.startswith("/execution-api/v1/inputs/"):
+            if not self._require_token():
+                return
+            input_id = path.removeprefix("/execution-api/v1/inputs/")
+            confirmed = self.server.state.confirmed.get(input_id)
+            self._send_json(
+                200,
+                {
+                    "input_id": input_id,
+                    "state": "validating" if confirmed else "draft",
+                    "upload_confirmation": (
+                        {"size_bytes": confirmed["size_bytes"], "sha256": confirmed["sha256"]}
+                        if confirmed
+                        else None
+                    ),
+                },
+            )
+            return
         if path == "/_allauth/app/v1/auth/session":
             token = self.headers.get("X-Session-Token")
             if token in self.server.state.email_by_token:
@@ -180,6 +293,35 @@ class FakeCloudRequestHandler(BaseHTTPRequestHandler):
             return
 
         self._send_json(404, {"detail": f"Unhandled GET {path}"})
+
+    def do_PUT(self) -> None:
+        path = urlparse(self.path).path
+        if path.startswith("/uploads/"):
+            transfer_id = path.removeprefix("/uploads/")
+            body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
+            headers = {key.lower(): value for key, value in self.headers.items()}
+            if self.server.state.put_error:
+                self._send_json(503, {"detail": "Upload failed"})
+                return
+            if (
+                transfer_id not in self.server.state.transfers.values()
+                or any(key == transfer_id for key, _, _ in self.server.state.uploads)
+                or headers.get("content-type") != "application/zstd"
+                or headers.get("x-upload-token") != "signed-only"
+                or headers.get("content-md5")
+                != base64.b64encode(hashlib.md5(body).digest()).decode()
+                or "x-session-token" in headers
+            ):
+                self._send_json(409, {"detail": "Invalid or reused signed URL"})
+                return
+            self.server.state.uploads.append((transfer_id, body, headers))
+            if self.server.state.lose_put_response:
+                self.server.state.lose_put_response = False
+                self._send_json(503, {"detail": "Response lost after PUT"})
+                return
+            self._send_bytes(201, b"")
+            return
+        self._send_json(404, {"detail": f"Unhandled PUT {path}"})
 
     def do_DELETE(self) -> None:
         path = urlparse(self.path).path
@@ -438,6 +580,16 @@ def test_cloud_status_requires_an_active_session(
         itzi_cloud_status(argparse.Namespace(fingerprint=None))
 
 
+def _fake_archive(path: Path, config: Path, grass_params: GrassParams) -> SimpleNamespace:
+    return SimpleNamespace(
+        ensemble=SimpleNamespace(source=SimpleNamespace(path=config, document_index=0)),
+        simulations=(SimpleNamespace(simulation_id="member-0", grass_params=grass_params),),
+        path=path,
+        size_bytes=path.stat().st_size,
+        sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+    )
+
+
 @pytest.mark.cloud
 def test_cloud_push_creates_and_resumes_each_document(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, fake_cloud_server: FakeCloudServer
@@ -449,6 +601,9 @@ def test_cloud_push_creates_and_resumes_each_document(
         argparse.Namespace(email="user@example.com", password="secret", logout=False, status=False)
     )
     config = tmp_path / "study.yaml"
+    payloads = (b"archive 0", b"archive 1")
+    for index, payload in enumerate(payloads):
+        (tmp_path / f"input-{index}.tzst").write_bytes(payload)
     archives = tuple(
         SimpleNamespace(
             ensemble=SimpleNamespace(source=SimpleNamespace(path=config, document_index=index)),
@@ -459,8 +614,8 @@ def test_cloud_push_creates_and_resumes_each_document(
                 for member in range(2)
             ),
             path=tmp_path / f"input-{index}.tzst",
-            size_bytes=42,
-            sha256=f"{index + 1:064x}",
+            size_bytes=len(payloads[index]),
+            sha256=hashlib.sha256(payloads[index]).hexdigest(),
         )
         for index in range(2)
     )
@@ -493,9 +648,36 @@ def test_cloud_push_creates_and_resumes_each_document(
         call[2] == "token-1" and call[3] == b""
         for call in fake_cloud_server.state.ensemble_creates
     )
+    assert [body for _, body, _ in fake_cloud_server.state.uploads] == list(payloads)
+    assert [item[1] for item in fake_cloud_server.state.upload_instruction_requests] == [
+        {
+            "size_bytes": len(payload),
+            "content_md5_base64": base64.b64encode(hashlib.md5(payload).digest()).decode(),
+        }
+        for payload in payloads
+    ]
+    assert [item[1] for item in fake_cloud_server.state.confirm_requests] == [
+        {
+            "transfer_id": f"transfer-{index + 1}",
+            "size_bytes": len(payload),
+            "sha256": hashlib.sha256(payload).hexdigest(),
+        }
+        for index, payload in enumerate(payloads)
+    ]
+    assert all(draft["upload_stage"] == "confirmed" for draft in drafts)
+    assert all(draft["confirmation_state"] == "validating" for draft in drafts)
+    assert all(
+        token == "token-1"
+        for _, _, token in (
+            *fake_cloud_server.state.upload_instruction_requests,
+            *fake_cloud_server.state.confirm_requests,
+        )
+    )
 
     itzi_cloud_push(args)
     assert len(fake_cloud_server.state.ensemble_creates) == 2
+    assert len(fake_cloud_server.state.uploads) == 2
+    assert len(fake_cloud_server.state.confirm_requests) == 2
     assert (
         json.loads(ctx.metadata_storage.get_metadata_file_path().read_text())["ensembles"]
         == stored["ensembles"]
@@ -522,20 +704,12 @@ def test_cloud_push_retries_with_same_idempotency_key(
         argparse.Namespace(email="user@example.com", password="secret", logout=False, status=False)
     )
     config = tmp_path / "study.yaml"
+    path = tmp_path / "input.tzst"
+    path.write_bytes(b"retry archive")
     monkeypatch.setattr(
         archive,
         "build_archives",
-        lambda path, token: (
-            SimpleNamespace(
-                ensemble=SimpleNamespace(source=SimpleNamespace(path=config, document_index=0)),
-                simulations=(
-                    SimpleNamespace(simulation_id="member-0", grass_params=ctx.grass_params),
-                ),
-                path=tmp_path / "input.tzst",
-                size_bytes=42,
-                sha256="f" * 64,
-            ),
-        ),
+        lambda filename, token: (_fake_archive(path, config, ctx.grass_params),),
     )
     state = fake_cloud_server.state
     state.create_conflict = failure == "conflict"
@@ -558,3 +732,103 @@ def test_cloud_push_retries_with_same_idempotency_key(
     assert (resumed["ensemble_id"], resumed["input_id"]) == ("ensemble-1", "input-1")
     itzi_cloud_push(args)
     assert len(state.ensemble_creates) == 2
+
+
+@pytest.mark.cloud
+@pytest.mark.parametrize(
+    ("failure", "stage", "message"),
+    [
+        ("storage_entitlement_error", None, "storage entitlement exceeded"),
+        ("expired_instructions", None, "Signed upload URL expired"),
+        ("put_error", None, "Signed upload failed"),
+        ("lose_put_response", None, "Signed upload failed"),
+        ("confirm_error", "uploaded", "503"),
+        ("lose_confirm_response", "uploaded", "503"),
+    ],
+)
+def test_cloud_upload_failure_resumes_safely(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    fake_cloud_server: FakeCloudServer,
+    failure: str,
+    stage: str | None,
+    message: str,
+) -> None:
+    from itzi.cloud import archive
+
+    ctx = _configure_cloud_test_environment(monkeypatch, tmp_path, fake_cloud_server)
+    itzi_cloud_login(
+        argparse.Namespace(email="user@example.com", password="secret", logout=False, status=False)
+    )
+    config = tmp_path / "study.yaml"
+    path = tmp_path / "input.tzst"
+    path.write_bytes(b"archive with exact bytes")
+    built = _fake_archive(path, config, ctx.grass_params)
+    monkeypatch.setattr(archive, "build_archives", lambda filename, token: (built,))
+    state = fake_cloud_server.state
+    setattr(state, failure, True)
+    args = argparse.Namespace(project="proj-public", config_file=[str(config)])
+    with pytest.raises(FatalError, match=message):
+        itzi_cloud_push(args)
+    metadata_path = ctx.metadata_storage.get_metadata_file_path()
+    draft = next(iter(json.loads(metadata_path.read_text())["ensembles"].values()))
+    assert draft["upload_stage"] == stage
+    assert draft["ensemble_id"] == "ensemble-1"
+    assert (len(state.uploads), len(state.confirm_requests)) == {
+        "storage_entitlement_error": (0, 0),
+        "expired_instructions": (0, 0),
+        "put_error": (0, 0),
+        "lose_put_response": (1, 0),
+        "confirm_error": (1, 1),
+        "lose_confirm_response": (1, 1),
+    }[failure]
+
+    setattr(state, failure, False)
+    itzi_cloud_push(args)
+    assert len(state.ensemble_creates) == 1
+    assert len(state.uploads) == (2 if failure == "lose_put_response" else 1)
+    assert len({transfer for transfer, _, _ in state.uploads}) == len(state.uploads)
+    assert len(state.confirm_requests) == (2 if failure == "confirm_error" else 1)
+    assert len(state.upload_instruction_requests) == (
+        2
+        if failure
+        in ("storage_entitlement_error", "expired_instructions", "put_error", "lose_put_response")
+        else 1
+    )
+    assert (
+        next(iter(json.loads(metadata_path.read_text())["ensembles"].values()))["upload_stage"]
+        == "confirmed"
+    )
+
+
+@pytest.mark.cloud
+def test_cloud_upload_refuses_unpermitted_refresh_and_wrong_digest(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, fake_cloud_server: FakeCloudServer
+) -> None:
+    from itzi.cloud import archive
+
+    ctx = _configure_cloud_test_environment(monkeypatch, tmp_path, fake_cloud_server)
+    itzi_cloud_login(
+        argparse.Namespace(email="user@example.com", password="secret", logout=False, status=False)
+    )
+    path = tmp_path / "input.tzst"
+    path.write_bytes(b"real archive")
+    built = _fake_archive(path, tmp_path / "study.yaml", ctx.grass_params)
+    monkeypatch.setattr(archive, "build_archives", lambda filename, token: (built,))
+    args = argparse.Namespace(project="proj-public", config_file=["study.yaml"])
+    fake_cloud_server.state.expired_instructions = True
+    with pytest.raises(FatalError, match="Signed upload URL expired"):
+        itzi_cloud_push(args)
+    assert fake_cloud_server.state.confirmed == {}
+    assert len(fake_cloud_server.state.uploads) == 0
+    fake_cloud_server.state.expired_instructions = False
+    path.write_bytes(b"fake archive")
+    with pytest.raises(FatalError, match="Archive SHA-256 changed"):
+        itzi_cloud_push(args)
+    path.write_bytes(b"real archive")
+
+    # A retry must not reuse the expired URL when the service refuses fresh instructions.
+    fake_cloud_server.state.instruction_conflict = True
+    with pytest.raises(FatalError, match="409"):
+        itzi_cloud_push(args)
+    assert len(fake_cloud_server.state.uploads) == 0

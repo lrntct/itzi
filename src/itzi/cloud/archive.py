@@ -19,6 +19,7 @@ import math
 import shutil
 import tarfile
 import tempfile
+import warnings
 from compression.zstd import CompressionParameter
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, replace
@@ -36,6 +37,7 @@ from pydantic import BaseModel
 from pyproj import CRS
 from pyproj.exceptions import CRSError
 from zarr.codecs import BytesCodec, ZstdCodec
+from zarr.errors import UnstableSpecificationWarning
 
 import itzi.messenger as msgr
 from itzi.cloud import urls
@@ -449,7 +451,15 @@ def build_archive(
     try:
         with tempfile.TemporaryDirectory(prefix="itzi-zarr-") as temp:
             zarr_path = Path(temp) / "input.zarr"
-            ds.to_zarr(zarr_path, mode="w", zarr_format=3, encoding=encoding)
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore",
+                    message=r"The data type \(FixedLengthUTF32\(",
+                    category=UnstableSpecificationWarning,
+                )
+                ds.to_zarr(
+                    zarr_path, mode="w", zarr_format=3, encoding=encoding, consolidated=False
+                )
             metadata_size = sum(p.stat().st_size for p in zarr_path.rglob("zarr.json"))
             _check_limit(metadata_size, limits.INPUT_MAX_METADATA_BYTES, "Zarr metadata bytes")
             with tarfile.open(

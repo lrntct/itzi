@@ -4,6 +4,7 @@ import hashlib
 import sys
 import tarfile
 import types
+import warnings
 from contextlib import contextmanager, nullcontext
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -84,6 +85,7 @@ def test_two_member_input_archive(monkeypatch: pytest.MonkeyPatch, tmp_path: Pat
     import xarray as xr
     import zarr
     from itzi_core import DomainData
+    from zarr.errors import UnstableSpecificationWarning, ZarrUserWarning
 
     from itzi.cloud import archive
     from itzi.ensemble.models import (
@@ -207,9 +209,17 @@ def test_two_member_input_archive(monkeypatch: pytest.MonkeyPatch, tmp_path: Pat
             accepted_extensions=[archive.WriterExtension(name="fixed_length_utf32", version="1")],
         ),
     )
-    with monkeypatch.context() as patch:
-        patch.setattr(xr, "open_dataset", read_one)
-        result = archive.build_archive(ensemble, simulations, capability, tmp_path / "input.tzst")
+    with warnings.catch_warnings(record=True) as recorded:
+        warnings.simplefilter("always")
+        with monkeypatch.context() as patch:
+            patch.setattr(xr, "open_dataset", read_one)
+            result = archive.build_archive(
+                ensemble, simulations, capability, tmp_path / "input.tzst"
+            )
+    assert not any(
+        isinstance(warning.message, (UnstableSpecificationWarning, ZarrUserWarning))
+        for warning in recorded
+    )
     raw = result.path.read_bytes()
     assert result.size_bytes == len(raw)
     assert result.sha256 == hashlib.sha256(raw).hexdigest()

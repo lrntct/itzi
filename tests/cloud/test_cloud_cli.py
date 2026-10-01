@@ -159,6 +159,9 @@ def test_itzi_cloud_push_creates_ensemble_draft(monkeypatch):
             calls.append((archive.path, kwargs))
             or SimpleNamespace(ensemble_id="ensemble-1", input_id="input-1")
         ),
+        upload_input=lambda archive, draft, token: (
+            calls.append((archive.path, draft.input_id, token)) or draft
+        ),
     )
     monkeypatch.setattr("itzi.cloud.cli.msgr.message", messages.append)
     itzi_cloud_push(argparse.Namespace(project="project-id", config_file=["one.yml"]))
@@ -168,8 +171,9 @@ def test_itzi_cloud_push_creates_ensemble_draft(monkeypatch):
             Path("/tmp/input.tzst"),
             {"project_id": "project-id", "email": "user@example.com", "session_token": "token"},
         ),
+        (Path("/tmp/input.tzst"), "input-1", "token"),
     ]
-    assert "Ensemble ensemble-1, draft Input input-1; built /tmp/input.tzst" in messages[0]
+    assert "Ensemble ensemble-1, Input input-1 confirmed; validation queued" in messages[0]
 
 
 def test_itzi_cloud_status_displays_single_simulation(monkeypatch):

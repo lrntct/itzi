@@ -13,6 +13,7 @@ GNU General Public License for more details.
 """
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -58,3 +59,30 @@ class ProjectSchema(BaseModel):
 class EnsembleInputResponseSchema(BaseModel):
     ensemble_id: str = Field(min_length=1)
     input_id: str = Field(min_length=1)
+
+
+class InputUploadInstructionSchema(BaseModel):
+    input_id: str
+    transfer_id: str = Field(min_length=1)
+    method: Literal["PUT"]
+    url: str
+    headers: dict[str, str]
+    expires_at: datetime
+    size_bytes: int
+    content_type: Literal["application/zstd"]
+
+
+class InputConfirmationSchema(BaseModel):
+    input_id: str
+    state: str
+
+
+class UploadConfirmationSchema(BaseModel):
+    size_bytes: int
+    sha256: str
+
+
+class InputUploadStatusSchema(BaseModel):
+    input_id: str
+    state: str
+    upload_confirmation: UploadConfirmationSchema | None

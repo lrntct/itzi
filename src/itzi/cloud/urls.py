@@ -49,6 +49,10 @@ def get_ensembles_endpoint(project_id: str) -> str:
     return f"{get_projects_endpoint()}/{quote(project_id, safe='')}/ensembles"
 
 
+def get_input_endpoint(input_id: str) -> str:
+    return f"{get_execution_api_base()}/inputs/{quote(input_id, safe='')}"
+
+
 # Backward-compatible module attributes for callers that only need the default values.
 API_BASE = get_api_base()
 LOGIN_ENDPOINT = get_login_endpoint()

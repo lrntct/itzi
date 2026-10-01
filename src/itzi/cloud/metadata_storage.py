@@ -18,7 +18,7 @@ import json
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TypedDict
+from typing import Literal, TypedDict
 from uuid import NAMESPACE_URL, uuid5
 
 from platformdirs import user_data_dir
@@ -45,6 +45,9 @@ class EnsembleDraft(BaseModel):
     idempotency_key: str
     ensemble_id: str | None = None
     input_id: str | None = None
+    upload_stage: Literal["uploaded", "confirmed"] | None = None
+    transfer_id: str | None = None
+    confirmation_state: str | None = None
 
 
 @with_config(ConfigDict(extra="allow"))
