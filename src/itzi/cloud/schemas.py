@@ -53,3 +53,8 @@ class ProjectSchema(BaseModel):
     project_id: str
     name: str
     team: TeamSchema
+
+
+class EnsembleInputResponseSchema(BaseModel):
+    ensemble_id: str = Field(min_length=1)
+    input_id: str = Field(min_length=1)

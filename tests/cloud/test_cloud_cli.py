@@ -124,7 +124,7 @@ def test_itzi_cloud_login_prompts_for_password(monkeypatch):
     assert calls == [("user@example.com", "secret")]
 
 
-def test_itzi_cloud_push_builds_yaml_archives_without_submitting(monkeypatch):
+def test_itzi_cloud_push_creates_ensemble_draft(monkeypatch):
     from pathlib import Path
 
     calls = []
@@ -142,7 +142,7 @@ def test_itzi_cloud_push_builds_yaml_archives_without_submitting(monkeypatch):
             calls.append((path, token))
             or (
                 SimpleNamespace(
-                    source=SimpleNamespace(
+                    ensemble=SimpleNamespace(
                         source=SimpleNamespace(path=Path(path), document_index=0)
                     ),
                     path=Path("/tmp/input.tzst"),
@@ -152,10 +152,24 @@ def test_itzi_cloud_push_builds_yaml_archives_without_submitting(monkeypatch):
             )
         ),
     )
+    install_stub_module(
+        monkeypatch,
+        "itzi.cloud.push",
+        create_ensemble=lambda archive, **kwargs: (
+            calls.append((archive.path, kwargs))
+            or SimpleNamespace(ensemble_id="ensemble-1", input_id="input-1")
+        ),
+    )
     monkeypatch.setattr("itzi.cloud.cli.msgr.message", messages.append)
     itzi_cloud_push(argparse.Namespace(project="project-id", config_file=["one.yml"]))
-    assert calls == [("one.yml", "token")]
-    assert "built /tmp/input.tzst" in messages[0]
+    assert calls == [
+        ("one.yml", "token"),
+        (
+            Path("/tmp/input.tzst"),
+            {"project_id": "project-id", "email": "user@example.com", "session_token": "token"},
+        ),
+    ]
+    assert "Ensemble ensemble-1, draft Input input-1; built /tmp/input.tzst" in messages[0]
 
 
 def test_itzi_cloud_status_displays_single_simulation(monkeypatch):

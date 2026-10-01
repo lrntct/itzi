@@ -1,5 +1,5 @@
 """
-Copyright (C) 2025 Laurent Courty
+Copyright (C) 2025-2026 Laurent Courty
 
 This program is free software; you can redistribute it and/or
 modify it under the terms of the GNU General Public License
@@ -13,20 +13,121 @@ GNU General Public License for more details.
 """
 
 from __future__ import annotations
-from pathlib import Path
-from datetime import datetime, timezone
+
 import json
 import tempfile
-import shutil
-from typing import Any
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import TypedDict
+from uuid import NAMESPACE_URL, uuid5
 
 from platformdirs import user_data_dir
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, with_config
 
 from itzi.grass.session import GrassParams
 
-
 # Metadata schema version
 METADATA_VERSION = "1.0"
+
+
+class EnsembleDraft(BaseModel):
+    """Locally durable identity and server IDs for one YAML document."""
+
+    model_config = ConfigDict(frozen=True, extra="allow")
+
+    email: str
+    project_id: str
+    config_file: str
+    document_index: int
+    member_labels: tuple[str, ...]
+    grass_params: GrassParams
+    archive_sha256: str
+    idempotency_key: str
+    ensemble_id: str | None = None
+    input_id: str | None = None
+
+
+@with_config(ConfigDict(extra="allow"))
+class StoredGrassParams(TypedDict):
+    grassdata: str | None
+    location: str | None
+    mapset: str | None
+    grass_bin: str | None
+
+
+@with_config(ConfigDict(extra="allow"))
+class SimulationRecord(TypedDict):
+    email: str
+    config_file: str
+    pushed_at: str
+    grass_params: StoredGrassParams
+
+
+class MetadataFile(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    version: str
+    simulations: dict[str, SimulationRecord]
+    ensembles: dict[str, EnsembleDraft] = Field(default_factory=dict)
+
+
+def _write_metadata_file(metadata_file: Path, metadata: MetadataFile) -> None:
+    temp_fd, temp_path = tempfile.mkstemp(
+        dir=metadata_file.parent, prefix=".cloud_", suffix=".tmp"
+    )
+    try:
+        with open(temp_fd, "w") as file:
+            json.dump(metadata.model_dump(mode="json"), file, indent=2)
+        Path(temp_path).replace(metadata_file)
+    finally:
+        Path(temp_path).unlink(missing_ok=True)
+
+
+def save_ensemble_draft(draft: EnsembleDraft) -> None:
+    """Persist a create attempt (or its response) before advancing to the next step."""
+    metadata_file = get_metadata_file_path()
+    metadata = _load_metadata_file(metadata_file)
+    metadata.ensembles[draft.idempotency_key] = draft
+    _write_metadata_file(metadata_file, metadata)
+
+
+def get_or_create_ensemble_draft(
+    email: str,
+    project_id: str,
+    config_file: Path,
+    document_index: int,
+    member_labels: tuple[str, ...],
+    grass_params: GrassParams,
+    archive_sha256: str,
+) -> EnsembleDraft:
+    """Keep a stable idempotency key across failed requests and later invocations."""
+    path = str(config_file.resolve())
+    key = str(uuid5(NAMESPACE_URL, json.dumps((email, project_id, path, document_index))))
+    metadata = _load_metadata_file(get_metadata_file_path())
+    stored = metadata.ensembles.get(key)
+    if stored is not None:
+        if (
+            stored.member_labels != member_labels
+            or stored.grass_params != grass_params
+            or stored.archive_sha256 != archive_sha256
+        ):
+            raise ValueError(
+                f"{path} document {document_index} has changed since cloud creation; "
+                "use a new YAML path for a new Ensemble"
+            )
+        return stored
+    draft = EnsembleDraft(
+        email=email,
+        project_id=project_id,
+        config_file=path,
+        document_index=document_index,
+        member_labels=member_labels,
+        grass_params=grass_params,
+        archive_sha256=archive_sha256,
+        idempotency_key=key,
+    )
+    save_ensemble_draft(draft)
+    return draft
 
 
 def get_metadata_file_path() -> Path:
@@ -68,11 +169,6 @@ def get_metadata_file_path() -> Path:
 def _initialize_metadata_file(metadata_file: Path) -> None:
     """
     Initialize a new metadata file with the base structure.
-
-    Parameters
-    ----------
-    metadata_file : Path
-        Path to the metadata file.
     """
     initial_data = {"version": METADATA_VERSION, "simulations": {}}
 
@@ -80,7 +176,7 @@ def _initialize_metadata_file(metadata_file: Path) -> None:
         json.dump(initial_data, f, indent=2)
 
 
-def _load_metadata_file(metadata_file: Path) -> dict[str, Any]:
+def _load_metadata_file(metadata_file: Path) -> MetadataFile:
     """
     Load and parse metadata file.
 
@@ -88,11 +184,6 @@ def _load_metadata_file(metadata_file: Path) -> dict[str, Any]:
     ----------
     metadata_file : Path
         Path to the metadata file.
-
-    Returns
-    -------
-    Dict[str, Any]
-        Parsed metadata dictionary.
 
     Raises
     ------
@@ -103,20 +194,12 @@ def _load_metadata_file(metadata_file: Path) -> dict[str, Any]:
         with open(metadata_file, "r") as f:
             data = json.load(f)
 
-        # Validate basic structure
-        if not isinstance(data, dict):
-            raise ValueError("Metadata file is corrupted: root is not a dictionary")
-
-        if "version" not in data:
-            raise ValueError("Metadata file is corrupted: missing version field")
-
-        if "simulations" not in data:
-            raise ValueError("Metadata file is corrupted: missing simulations field")
-
-        return data
+        return MetadataFile.model_validate(data)
 
     except json.JSONDecodeError as e:
-        raise ValueError(f"Metadata file contains invalid JSON: {e}")
+        raise ValueError(f"Metadata file contains invalid JSON: {e}") from e
+    except ValidationError as e:
+        raise ValueError(f"Metadata file is corrupted: {e}") from e
 
 
 def save_simulation_metadata(
@@ -131,16 +214,6 @@ def save_simulation_metadata(
     This function stores the GRASS session information for a pushed simulation
     so it can be retrieved later during pull operations.
 
-    Parameters
-    ----------
-    fingerprint : str
-        Unique simulation identifier.
-    email : str
-        User email address.
-    config_file : str
-        Path to the configuration file used for this simulation.
-    grass_params : GrassParams
-        GRASS parameters from the push operation.
 
     Notes
     -----
@@ -157,19 +230,12 @@ def save_simulation_metadata(
     """
     metadata_file = get_metadata_file_path()
 
-    # Load existing metadata
-    try:
-        metadata = _load_metadata_file(metadata_file)
-    except (FileNotFoundError, ValueError):
-        # If file doesn't exist or is corrupted, start fresh
-        _initialize_metadata_file(metadata_file)
-        metadata = _load_metadata_file(metadata_file)
+    metadata = _load_metadata_file(metadata_file)
 
-    # Create simulation entry
-    simulation_data = {
+    simulation_data: SimulationRecord = {
         "email": email,
         "config_file": str(config_file),
-        "pushed_at": datetime.now(timezone.utc).isoformat(),
+        "pushed_at": datetime.now(UTC).isoformat(),
         "grass_params": {
             "grassdata": str(grass_params.grassdata) if grass_params.grassdata else None,
             "location": grass_params.location,
@@ -178,45 +244,14 @@ def save_simulation_metadata(
         },
     }
 
-    # Update metadata
-    metadata["simulations"][fingerprint] = simulation_data
+    metadata.simulations[fingerprint] = simulation_data
 
-    # Write atomically using a temporary file
-    # This prevents corruption if the process is interrupted
-    temp_fd, temp_path = tempfile.mkstemp(
-        dir=metadata_file.parent, prefix=".cloud_simulations_", suffix=".tmp"
-    )
-
-    try:
-        # Write to temp file
-        with open(temp_fd, "w") as f:
-            json.dump(metadata, f, indent=2)
-
-        # Atomic move (renames are atomic on POSIX systems)
-        shutil.move(temp_path, metadata_file)
-
-    except Exception:
-        # Clean up temp file on error
-        try:
-            Path(temp_path).unlink(missing_ok=True)
-        except Exception:
-            pass
-        raise
+    _write_metadata_file(metadata_file, metadata)
 
 
 def load_simulation_metadata(fingerprint: str) -> GrassParams | None:
     """
     Load GRASS parameters for a simulation from local storage.
-
-    Parameters
-    ----------
-    fingerprint : str
-        Unique simulation identifier.
-
-    Returns
-    -------
-    Optional[GrassParams]
-        GrassParams object if metadata exists, None otherwise.
 
     Notes
     -----
@@ -231,16 +266,16 @@ def load_simulation_metadata(fingerprint: str) -> GrassParams | None:
 
     try:
         metadata = _load_metadata_file(metadata_file)
-    except (FileNotFoundError, ValueError):
+    except FileNotFoundError, ValueError:
         # File doesn't exist or is corrupted
         return None
 
     # Check if simulation exists
-    if fingerprint not in metadata.get("simulations", {}):
+    if fingerprint not in metadata.simulations:
         return None
 
-    sim_data = metadata["simulations"][fingerprint]
-    grass_data = sim_data.get("grass_params", {})
+    sim_data = metadata.simulations[fingerprint]
+    grass_data = sim_data["grass_params"]
 
     # Extract parameters
     grassdata = grass_data.get("grassdata")
@@ -279,17 +314,13 @@ def load_simulation_metadata(fingerprint: str) -> GrassParams | None:
     )
 
 
-def list_all_simulations() -> dict[str, dict[str, Any]]:
+def list_all_simulations() -> dict[str, SimulationRecord]:
     """
     List all stored simulation metadata.
 
     This is a convenience function for debugging and management.
 
-    Returns
-    -------
-    Dict[str, Dict[str, Any]]
-        Dictionary mapping fingerprints to simulation metadata.
-        Returns empty dict if no metadata exists or file is corrupted.
+    Returns an empty dict if no metadata exists or the file is corrupted.
 
     Notes
     -----
@@ -302,6 +333,6 @@ def list_all_simulations() -> dict[str, dict[str, Any]]:
 
     try:
         metadata = _load_metadata_file(metadata_file)
-        return metadata.get("simulations", {})
-    except (FileNotFoundError, ValueError):
+        return metadata.simulations
+    except FileNotFoundError, ValueError:
         return {}

@@ -11,12 +11,13 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 from urllib.parse import urlparse
 
 import pytest
 
-from itzi.cloud.cli import itzi_cloud_login, itzi_cloud_pull, itzi_cloud_status
+from itzi.cloud.cli import itzi_cloud_login, itzi_cloud_pull, itzi_cloud_push, itzi_cloud_status
 from itzi.grass.session import GrassParams
 from itzi.messenger import FatalError
 
@@ -60,6 +61,10 @@ class FakeCloudState:
         self.download_headers: dict[str, dict[str, str]] = {}
         self.download_archives: dict[str, bytes] = {}
         self.results_lookup_errors: dict[str, tuple[int, dict[str, Any]]] = {}
+        self.ensemble_creates: list[tuple[str, str, str, bytes]] = []
+        self.ensembles_by_key: dict[str, dict[str, str]] = {}
+        self.create_conflict = False
+        self.lose_create_response = False
 
 
 class FakeCloudServer(ThreadingHTTPServer):
@@ -78,6 +83,30 @@ class FakeCloudRequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = urlparse(self.path).path
+        if path.startswith("/execution-api/v1/projects/") and path.endswith("/ensembles"):
+            if not self._require_token():
+                return
+            body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
+            key = self.headers.get("Idempotency-Key", "")
+            self.server.state.ensemble_creates.append(
+                (path, key, self.headers.get("X-Session-Token", ""), body)
+            )
+            if self.server.state.create_conflict:
+                self._send_json(409, {"detail": "Project cannot accept a new Ensemble"})
+                return
+            created = self.server.state.ensembles_by_key.setdefault(
+                key,
+                {
+                    "ensemble_id": f"ensemble-{len(self.server.state.ensembles_by_key) + 1}",
+                    "input_id": f"input-{len(self.server.state.ensembles_by_key) + 1}",
+                },
+            )
+            if self.server.state.lose_create_response:
+                self.server.state.lose_create_response = False
+                self._send_json(503, {"detail": "Response lost after create"})
+                return
+            self._send_json(201, created)
+            return
         if path == "/_allauth/app/v1/auth/login":
             payload = self._read_json()
             email = payload["email"]
@@ -407,3 +436,125 @@ def test_cloud_status_requires_an_active_session(
 
     with pytest.raises(FatalError, match="Please log in first"):
         itzi_cloud_status(argparse.Namespace(fingerprint=None))
+
+
+@pytest.mark.cloud
+def test_cloud_push_creates_and_resumes_each_document(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, fake_cloud_server: FakeCloudServer
+) -> None:
+    from itzi.cloud import archive
+
+    ctx = _configure_cloud_test_environment(monkeypatch, tmp_path, fake_cloud_server)
+    itzi_cloud_login(
+        argparse.Namespace(email="user@example.com", password="secret", logout=False, status=False)
+    )
+    config = tmp_path / "study.yaml"
+    archives = tuple(
+        SimpleNamespace(
+            ensemble=SimpleNamespace(source=SimpleNamespace(path=config, document_index=index)),
+            simulations=tuple(
+                SimpleNamespace(
+                    simulation_id=f"member-{index}-{member}", grass_params=ctx.grass_params
+                )
+                for member in range(2)
+            ),
+            path=tmp_path / f"input-{index}.tzst",
+            size_bytes=42,
+            sha256=f"{index + 1:064x}",
+        )
+        for index in range(2)
+    )
+    monkeypatch.setattr(archive, "build_archives", lambda path, token: archives)
+    args = argparse.Namespace(project="proj-public", config_file=[str(config)])
+    itzi_cloud_push(args)
+
+    stored = json.loads(ctx.metadata_storage.get_metadata_file_path().read_text())
+    assert "fp-001" in stored["simulations"]
+    drafts = list(stored["ensembles"].values())
+    assert [(draft["ensemble_id"], draft["input_id"]) for draft in drafts] == [
+        ("ensemble-1", "input-1"),
+        ("ensemble-2", "input-2"),
+    ]
+    for index, draft in enumerate(drafts):
+        assert draft["project_id"] == "proj-public"
+        assert draft["config_file"] == str(config.resolve())
+        assert draft["document_index"] == index
+        assert draft["member_labels"] == [f"member-{index}-0", f"member-{index}-1"]
+        assert draft["grass_params"]["grassdata"] == str(ctx.grass_params.grassdata)
+        assert draft["grass_params"]["location"] == "project"
+        assert draft["grass_params"]["mapset"] == "mapset"
+    assert [call[0] for call in fake_cloud_server.state.ensemble_creates] == [
+        "/execution-api/v1/projects/proj-public/ensembles"
+    ] * 2
+    assert [call[1] for call in fake_cloud_server.state.ensemble_creates] == [
+        draft["idempotency_key"] for draft in drafts
+    ]
+    assert all(
+        call[2] == "token-1" and call[3] == b""
+        for call in fake_cloud_server.state.ensemble_creates
+    )
+
+    itzi_cloud_push(args)
+    assert len(fake_cloud_server.state.ensemble_creates) == 2
+    assert (
+        json.loads(ctx.metadata_storage.get_metadata_file_path().read_text())["ensembles"]
+        == stored["ensembles"]
+    )
+
+    archives[0].sha256 = "0" * 64
+    with pytest.raises(FatalError, match="changed since cloud creation"):
+        itzi_cloud_push(args)
+    assert len(fake_cloud_server.state.ensemble_creates) == 2
+
+
+@pytest.mark.cloud
+@pytest.mark.parametrize("failure", ["conflict", "lost_response"])
+def test_cloud_push_retries_with_same_idempotency_key(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    fake_cloud_server: FakeCloudServer,
+    failure: str,
+) -> None:
+    from itzi.cloud import archive
+
+    ctx = _configure_cloud_test_environment(monkeypatch, tmp_path, fake_cloud_server)
+    itzi_cloud_login(
+        argparse.Namespace(email="user@example.com", password="secret", logout=False, status=False)
+    )
+    config = tmp_path / "study.yaml"
+    monkeypatch.setattr(
+        archive,
+        "build_archives",
+        lambda path, token: (
+            SimpleNamespace(
+                ensemble=SimpleNamespace(source=SimpleNamespace(path=config, document_index=0)),
+                simulations=(
+                    SimpleNamespace(simulation_id="member-0", grass_params=ctx.grass_params),
+                ),
+                path=tmp_path / "input.tzst",
+                size_bytes=42,
+                sha256="f" * 64,
+            ),
+        ),
+    )
+    state = fake_cloud_server.state
+    state.create_conflict = failure == "conflict"
+    state.lose_create_response = failure == "lost_response"
+    args = argparse.Namespace(project="proj-public", config_file=[str(config)])
+    with pytest.raises(
+        FatalError, match="Ensemble creation conflict" if failure == "conflict" else "503"
+    ):
+        itzi_cloud_push(args)
+    metadata_path = ctx.metadata_storage.get_metadata_file_path()
+    pending = next(iter(json.loads(metadata_path.read_text())["ensembles"].values()))
+    assert pending["ensemble_id"] is None and pending["input_id"] is None
+    assert len(state.ensembles_by_key) == (0 if failure == "conflict" else 1)
+
+    state.create_conflict = False
+    itzi_cloud_push(args)
+    assert [call[1] for call in state.ensemble_creates] == [pending["idempotency_key"]] * 2
+    assert len(state.ensembles_by_key) == 1
+    resumed = next(iter(json.loads(metadata_path.read_text())["ensembles"].values()))
+    assert (resumed["ensemble_id"], resumed["input_id"]) == ("ensemble-1", "input-1")
+    itzi_cloud_push(args)
+    assert len(state.ensemble_creates) == 2

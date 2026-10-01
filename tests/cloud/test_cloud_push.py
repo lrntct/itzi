@@ -4,7 +4,7 @@ import hashlib
 import sys
 import tarfile
 import types
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -153,13 +153,19 @@ def test_two_member_input_archive(monkeypatch: pytest.MonkeyPatch, tmp_path: Pat
         )
         for i, member in enumerate(ensemble.simulations)
     )
-    monkeypatch.setattr(archive, "GrassSessionManager", lambda *_args: nullcontext())
-
     fake_module = types.ModuleType("itzi.grass.interface")
     fake_module.GrassInterface = lambda **_kwargs: nullcontext(
         types.SimpleNamespace(get_npmask=lambda: np.zeros((5, 5), dtype=bool))
     )
-    monkeypatch.setitem(sys.modules, "itzi.grass.interface", fake_module)
+    monkeypatch.setitem(sys.modules, "itzi.grass.interface", None)
+
+    @contextmanager
+    def grass_session(_params: GrassParams):
+        with monkeypatch.context() as patch:
+            patch.setitem(sys.modules, "itzi.grass.interface", fake_module)
+            yield
+
+    monkeypatch.setattr(archive, "GrassSessionManager", grass_session)
 
     def read_one(path: Path, *, backend_kwargs: dict[str, list[str]]) -> xr.Dataset:
         assert path == tmp_path / "project" / "mapset"

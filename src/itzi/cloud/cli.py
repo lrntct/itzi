@@ -52,7 +52,7 @@ def itzi_cloud_login(cli_args) -> None:
 
 
 def itzi_cloud_push(cli_args: argparse.Namespace) -> None:
-    """Build cloud Input archives from YAML ensembles."""
+    """Build cloud Input archives and create their Ensemble drafts."""
     os.environ["ITZI_VERBOSE"] = str(VerbosityLevel.MESSAGE)
 
     from itzi.cloud.auth import check_login, get_token
@@ -60,16 +60,22 @@ def itzi_cloud_push(cli_args: argparse.Namespace) -> None:
     email = check_login()
     session_token = get_token(email)
     from itzi.cloud.archive import build_archives
+    from itzi.cloud.push import create_ensemble
 
     for conf_file in cli_args.config_file:
         try:
             for archive in build_archives(conf_file, session_token):
+                draft = create_ensemble(
+                    archive, project_id=cli_args.project, email=email, session_token=session_token
+                )
+                source = archive.ensemble.source
                 msgr.message(
-                    f"{archive.source.source.path} document {archive.source.source.document_index}: "
+                    f"{source.path} document {source.document_index}: "
+                    f"Ensemble {draft.ensemble_id}, draft Input {draft.input_id}; "
                     f"built {archive.path} ({archive.size_bytes} bytes, SHA-256 {archive.sha256})"
                 )
         except Exception as error:  # noqa: BLE001 - surface resolver, reader and HTTP errors.
-            msgr.fatal(f"{conf_file}: Input archive build failed: {error}")
+            msgr.fatal(f"{conf_file}: cloud push failed: {error}")
 
 
 def itzi_cloud_status(cli_args) -> None:

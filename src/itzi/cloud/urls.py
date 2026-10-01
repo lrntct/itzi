@@ -15,6 +15,7 @@ GNU General Public License for more details.
 from __future__ import annotations
 
 import os
+from urllib.parse import quote
 
 DEFAULT_API_BASE = "http://localhost:8000"
 API_BASE_ENV_VAR = "ITZI_CLOUD_API_BASE"
@@ -42,6 +43,10 @@ def get_simulations_endpoint() -> str:
 
 def get_projects_endpoint() -> str:
     return f"{get_execution_api_base()}/projects"
+
+
+def get_ensembles_endpoint(project_id: str) -> str:
+    return f"{get_projects_endpoint()}/{quote(project_id, safe='')}/ensembles"
 
 
 # Backward-compatible module attributes for callers that only need the default values.

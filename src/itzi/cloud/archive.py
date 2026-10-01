@@ -102,10 +102,11 @@ class InputFormat(BaseModel):
 
 @dataclass(frozen=True)
 class BuiltArchive:
-    source: ExpandedEnsemble
+    ensemble: ExpandedEnsemble
     path: Path
     sha256: str
     size_bytes: int
+    simulations: tuple[ResolvedSimulation, ...]
 
 
 def validate_crs(ds: xr.Dataset) -> None:
@@ -214,7 +215,8 @@ def _check_writer(capability: InputFormat) -> None:
         not in versions.accepted_extensions
     ):
         raise ValueError(
-            "Installed Xarray/Zarr writer or fixed_length_utf32 extension is not supported by the server"
+            "Installed Xarray/Zarr writer or fixed_length_utf32 "
+            "extension is not supported by the server"
         )
 
 
@@ -224,9 +226,6 @@ def _check_limit(value: int, maximum: int, description: str) -> None:
 
 
 def _warn_omissions(ensemble: ExpandedEnsemble) -> None:
-    if any(member.outputs.statistics_file for member in ensemble.simulations):
-        # Statistics are stored independently in the cloud
-        pass
     if any(member.drainage is not None for member in ensemble.simulations):
         msgr.warning(f"{ensemble.ensemble_id}: SWMM coupling/drainage will not run in the cloud")
     if ensemble.simulations[0].outputs.drainage_dataset:
@@ -237,8 +236,6 @@ def _dataset(
     simulations: tuple[ResolvedSimulation, ...],
     limits: InputLimits,
 ) -> xr.Dataset:
-    from itzi.grass.interface import GrassInterface
-
     first = simulations[0]
     domain = first.domain_data
     if any(
@@ -280,82 +277,85 @@ def _dataset(
         }
     )
     crs_wkt = ""
-    with (
-        GrassSessionManager(first.grass_params),
-        GrassInterface(
+    with GrassSessionManager(first.grass_params):
+        from itzi.grass.interface import GrassInterface
+
+        with GrassInterface(
             start_time=first.simulation_config.start_time,
             end_time=first.simulation_config.end_time,
             dtype=np.float32,
             region_id=first.grass_params.region,
             raster_mask_id=first.grass_params.mask,
             effective_mask=first.effective_mask,
-        ) as interface,
-    ):
-        mask = interface.get_npmask()
-        assert first.grass_params.grassdata is not None and first.grass_params.location is not None
-        grass_project = Path(first.grass_params.grassdata) / first.grass_params.location
-        for (identifier, kind), name in sources.items():
-            map_name, mapset = identifier.split("@", 1)
-            opened = xr.open_dataset(
-                grass_project / mapset,
-                backend_kwargs={
-                    "raster": [identifier] if kind == "raster" else [],
-                    "strds": [identifier] if kind == "strds" else [],
-                },
+        ) as interface:
+            mask = interface.get_npmask()
+            assert (
+                first.grass_params.grassdata is not None
+                and first.grass_params.location is not None
             )
-            validate_crs(opened)
-            crs_wkt = opened.attrs["crs_wkt"]
-            variable = opened[map_name]
-            time_dims = [dim for dim in variable.dims if dim not in ("x", "y")]
-            if time_dims:
-                old_time = time_dims[0]
-                variable = variable.drop_vars(
-                    [coord for coord in variable.coords if str(coord).startswith("end_time")],
-                    errors="ignore",
+            grass_project = Path(first.grass_params.grassdata) / first.grass_params.location
+            for (identifier, kind), name in sources.items():
+                map_name, mapset = identifier.split("@", 1)
+                opened = xr.open_dataset(
+                    grass_project / mapset,
+                    backend_kwargs={
+                        "raster": [identifier] if kind == "raster" else [],
+                        "strds": [identifier] if kind == "strds" else [],
+                    },
                 )
-                if first.simulation_config.temporal_type == TemporalType.RELATIVE:
-                    variable = variable.assign_coords(
-                        {old_time: convert_relative_time_coordinate(variable[old_time])}
+                validate_crs(opened)
+                crs_wkt = opened.attrs["crs_wkt"]
+                variable = opened[map_name]
+                time_dims = [dim for dim in variable.dims if dim not in ("x", "y")]
+                if time_dims:
+                    old_time = time_dims[0]
+                    variable = variable.drop_vars(
+                        [coord for coord in variable.coords if str(coord).startswith("end_time")],
+                        errors="ignore",
                     )
-                    start, end = (
-                        timedelta(0),
-                        first.simulation_config.end_time - first.simulation_config.start_time,
-                    )
-                else:
-                    start, end = (
-                        first.simulation_config.start_time,
-                        first.simulation_config.end_time,
-                    )
-                variable = variable.sel({old_time: slice(start, end)})
-                if not variable.sizes[old_time]:
-                    raise ValueError(f"{identifier} has no samples during simulation time")
-                variable = variable.rename({old_time: f"time_{name}"})
-            if first.effective_mask.mode == "explicit":
-                # xarray-grass reads through the active mapset MASK. Explicit masks
-                # override it, so recover the unmasked source before applying ours.
-                if kind == "raster":
-                    data = interface.read_raster_map(identifier)
-                else:
-                    import grass.temporal as tgis
-
-                    map_rows = tgis.open_stds.open_old_stds(
-                        identifier, "strds"
-                    ).get_registered_maps(columns="id", order="start_time")
-                    original_time = opened[map_name][old_time]
                     if first.simulation_config.temporal_type == TemporalType.RELATIVE:
-                        original_time = convert_relative_time_coordinate(original_time)
-                    selected = variable[f"time_{name}"]
-                    indices = np.flatnonzero(np.isin(original_time.values, selected.values))
-                    if len(map_rows) != original_time.size or len(indices) != selected.size:
-                        raise ValueError(f"STRDS {identifier} changed during Input reading")
-                    data = np.stack(
-                        [interface.read_raster_map(map_rows[index][0]) for index in indices]
-                    )
-                variable = variable.copy(data=data)
-            variable = variable.assign_coords(x=x, y=y)
-            variable = variable.where(~mask) if mask.any() else variable
-            variable.attrs = {"units": variable.attrs.get("units", "")}
-            ds[name] = variable
+                        variable = variable.assign_coords(
+                            {old_time: convert_relative_time_coordinate(variable[old_time])}
+                        )
+                        start, end = (
+                            timedelta(0),
+                            first.simulation_config.end_time - first.simulation_config.start_time,
+                        )
+                    else:
+                        start, end = (
+                            first.simulation_config.start_time,
+                            first.simulation_config.end_time,
+                        )
+                    variable = variable.sel({old_time: slice(start, end)})
+                    if not variable.sizes[old_time]:
+                        raise ValueError(f"{identifier} has no samples during simulation time")
+                    variable = variable.rename({old_time: f"time_{name}"})
+                if first.effective_mask.mode == "explicit":
+                    # xarray-grass reads through the active mapset MASK. Explicit masks
+                    # override it, so recover the unmasked source before applying ours.
+                    if kind == "raster":
+                        data = interface.read_raster_map(identifier)
+                    else:
+                        import grass.temporal as tgis
+
+                        map_rows = tgis.open_stds.open_old_stds(
+                            identifier, "strds"
+                        ).get_registered_maps(columns="id", order="start_time")
+                        original_time = opened[map_name][old_time]
+                        if first.simulation_config.temporal_type == TemporalType.RELATIVE:
+                            original_time = convert_relative_time_coordinate(original_time)
+                        selected = variable[f"time_{name}"]
+                        indices = np.flatnonzero(np.isin(original_time.values, selected.values))
+                        if len(map_rows) != original_time.size or len(indices) != selected.size:
+                            raise ValueError(f"STRDS {identifier} changed during Input reading")
+                        data = np.stack(
+                            [interface.read_raster_map(map_rows[index][0]) for index in indices]
+                        )
+                    variable = variable.copy(data=data)
+                variable = variable.assign_coords(x=x, y=y)
+                variable = variable.where(~mask) if mask.any() else variable
+                variable.attrs = {"units": variable.attrs.get("units", "")}
+                ds[name] = variable
     ds.attrs = {
         "crs_wkt": crs_wkt,
         "itzi_dimension_names": {
@@ -470,6 +470,7 @@ def build_archive(
             path,
             sha256,
             path.stat().st_size,
+            simulations,
         )
     except Exception:
         path.unlink(missing_ok=True)

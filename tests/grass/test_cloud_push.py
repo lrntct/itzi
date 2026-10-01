@@ -93,7 +93,7 @@ outputs:
     )
     built = archive.build_archive(ensemble, simulations, capability, config.parent / "smoke.tzst")
     assert built.path.is_file()
-    assert "statistics CSV output will not run" in caplog.text
+    assert "statistics CSV output will not run" not in caplog.text
     assert "SWMM coupling/drainage will not run" in caplog.text
 
     gscript.mapcalc("cloud_explicit_mask=if(col() == 1,null(),1)")

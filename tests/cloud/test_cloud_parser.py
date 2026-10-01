@@ -33,6 +33,11 @@ def test_cloud_push_parser_requires_project_id():
         build_parser().parse_args(["cloud", "push", "sim.yaml"])
 
 
+def test_cloud_push_parser_rejects_force():
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["cloud", "push", "-p", "project-id", "--force", "sim.yaml"])
+
+
 def test_cloud_push_help_requests_public_project_id(capsys):
     with pytest.raises(SystemExit) as exc_info:
         build_parser().parse_args(["cloud", "push", "--help"])
