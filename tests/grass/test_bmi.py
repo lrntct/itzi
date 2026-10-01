@@ -1,9 +1,10 @@
 """Test the Basic Model Interface implementation."""
 
 import os
+from collections.abc import Iterator
 
-import pytest
 import numpy as np
+import pytest
 
 from itzi import BmiItzi
 
@@ -14,6 +15,12 @@ def bmi_object(grass_5by5, test_data_path):
     conf_file = os.path.join(test_data_path, "5by5", "5by5.ini")
     itzi_bmi.initialize(conf_file)
     return itzi_bmi
+
+
+@pytest.fixture(scope="class")
+def finalize_bmi_object(bmi_object: BmiItzi) -> Iterator[None]:
+    yield
+    bmi_object.finalize()
 
 
 @pytest.mark.forked
@@ -53,6 +60,7 @@ class TestBmiMutating:
         assert np.all(value == bmi_object.get_value_ptr(var_name))
 
 
+@pytest.mark.usefixtures("finalize_bmi_object")
 class TestBmi:
     """Test non-mutating functions. No forking needed."""
 
@@ -67,7 +75,7 @@ class TestBmi:
 
     def test_get_output_item_count(self, bmi_object):
         count = bmi_object.get_output_item_count()
-        assert count == 14
+        assert count == 16
 
     def test_get_input_var_names(self, bmi_object):
         names = bmi_object.get_input_var_names()
@@ -76,6 +84,18 @@ class TestBmi:
     def test_get_output_var_names(self, bmi_object):
         names = bmi_object.get_output_var_names()
         assert len(names) == bmi_object.get_output_item_count()
+        assert {
+            "land_surface_water__max_of_depth",
+            "land_surface_water_flow__max_of_speed",
+            "land_surface_water_surface__elevation",
+            "land_surface_water__x_component_of_runoff_volume_flow_rate",
+            "land_surface_water__y_component_of_runoff_volume_flow_rate",
+            "land_surface_water__time_integral_of_created_volume",
+        } <= set(names)
+        assert "land_surface_water__time_integral_of_error_volume" not in names
+        assert "land_surface_water__elevation" not in names
+        assert "land_surface_water__x_component_of_runoff_volume_flux" not in names
+        assert "land_surface_water__y_component_of_runoff_volume_flux" not in names
 
     # Time functions #
     def test_time_unit(self, bmi_object):
@@ -128,12 +148,12 @@ class TestBmi:
     # Values getting and setting functions #
     def test_get_value_ptr(self, bmi_object):
         value_ptr = bmi_object.get_value_ptr("land_surface__elevation")
-        ref_value = bmi_object.itzi.sim.get_array("dem")
+        ref_value = bmi_object.itzi.sim.get_array("ground_elevation")
         assert np.all(value_ptr == ref_value)
 
     def test_get_value(self, bmi_object):
         value = bmi_object.get_value("land_surface__elevation")
-        ref_value = bmi_object.itzi.sim.get_array("dem")
+        ref_value = bmi_object.itzi.sim.get_array("ground_elevation")
         assert np.all(value == ref_value)
 
     def test_get_value_at_indices(self, bmi_object):

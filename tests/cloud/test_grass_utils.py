@@ -7,7 +7,7 @@ from types import ModuleType
 import pytest
 
 from itzi.cloud import grass_utils
-from itzi.grass_session import GrassParams
+from itzi.grass.session import GrassParams
 
 
 def install_fake_grass(monkeypatch, gisenv) -> None:

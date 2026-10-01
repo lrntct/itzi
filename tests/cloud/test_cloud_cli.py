@@ -15,7 +15,7 @@ from itzi.cloud.cli import (
     itzi_cloud_status,
     resolve_cloud_pull_grass_params,
 )
-from itzi.grass_session import GrassParams
+from itzi.grass.session import GrassParams
 from itzi.messenger import VerbosityLevel
 
 
@@ -198,7 +198,7 @@ def test_itzi_cloud_push_submits_and_saves_metadata(monkeypatch):
     ]
     assert messages == [
         "sim.ini: Uploading input data...",
-        "sim.ini: Uploading input data success!",
+        "sim.ini: Successful submission. Fingerprint: fp-123",
     ]
 
 

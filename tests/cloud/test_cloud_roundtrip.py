@@ -22,7 +22,7 @@ from itzi_core.data_containers import SimulationConfig, SurfaceFlowParameters
 
 from itzi.cloud.cli import itzi_cloud_login, itzi_cloud_pull, itzi_cloud_push, itzi_cloud_status
 from itzi.cloud.schemas import DomainInfo, SimulationRequestSchema
-from itzi.grass_session import GrassParams
+from itzi.grass.session import GrassParams
 from itzi.messenger import FatalError
 
 
@@ -361,8 +361,8 @@ def _configure_cloud_test_environment(
             end_time=datetime(2025, 1, 1, 13, tzinfo=UTC),
             record_step=timedelta(minutes=15),
             temporal_type=TemporalType.ABSOLUTE,
-            input_map_names={"dem": "dem"},
-            output_map_names={"h": "depth"},
+            input_map_names={"ground_elevation": "dem"},
+            output_map_names={"water_depth": "depth"},
             surface_flow_parameters=SurfaceFlowParameters(),
         ),
         dataset_hash=dataset_hash,

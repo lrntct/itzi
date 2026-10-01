@@ -22,7 +22,7 @@ from typing import Any
 
 from platformdirs import user_data_dir
 
-from itzi.grass_session import GrassParams
+from itzi.grass.session import GrassParams
 
 
 # Metadata schema version

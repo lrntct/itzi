@@ -24,10 +24,10 @@ from typing import TYPE_CHECKING
 import itzi.messenger as msgr
 from itzi.cloud import urls
 from itzi.cloud.schemas import ResultsDownloadResponseSchema
-from itzi.grass_session import GrassSessionManager
+from itzi.grass.session import GrassSessionManager
 
 if TYPE_CHECKING:
-    from itzi.grass_session import GrassParams
+    from itzi.grass.session import GrassParams
 
 try:
     import requests

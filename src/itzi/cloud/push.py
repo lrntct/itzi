@@ -42,13 +42,13 @@ from itzi.cloud.schemas import (
     SimulationResponseSchema,
 )
 from itzi.configreader import ConfigReader
-from itzi.grass_session import GrassSessionManager
+from itzi.grass.session import GrassSessionManager
 
 if TYPE_CHECKING:
     from itzi_core.data_containers import SimulationConfig
 
-    from itzi.grass_session import GrassParams
-    from itzi.providers.grass_interface import GrassInterface
+    from itzi.grass.interface import GrassInterface
+    from itzi.grass.session import GrassParams
 
 try:
     import xarray as xr
@@ -108,7 +108,7 @@ def _write_reproducible_tar_gz(source_path: Path, tar_path: Path, arcname: str) 
 def pack_input(sim_config: SimulationConfig, grass_params: GrassParams) -> InputInfo:
     """Pack all input data into a tared zarr."""
     with GrassSessionManager(grass_params):
-        from itzi.providers.grass_interface import GrassInterface
+        from itzi.grass.interface import GrassInterface
 
         grass_interface = GrassInterface(
             start_time=sim_config.start_time,
@@ -120,8 +120,8 @@ def pack_input(sim_config: SimulationConfig, grass_params: GrassParams) -> Input
         domain_info = DomainInfo(
             rows=grass_interface.yr,
             cols=grass_interface.xr,
-            ewres=grass_interface.dx,
-            nsres=grass_interface.dy,
+            ewres=grass_interface.region.ewres,
+            nsres=grass_interface.region.nsres,
         )
         cat_dict = list_input_maps(sim_config.input_map_names, grass_interface)
 
@@ -315,26 +315,21 @@ def list_input_maps(
     input_map_names: Mapping[str, str | None], grass_interface: GrassInterface
 ) -> dict[str, dict[str, list[str]]]:
     """Create a dict of map name lists categorized by mapset and type (raster or strds)"""
+    from itzi.grass.utils import resolve_input_identifier
 
     categorized: dict[str, dict[str, list[str]]] = {}
-    for map_key, map_name in input_map_names.items():
+    for map_name in input_map_names.values():
         if map_name:
-            map_id = grass_interface.format_id(map_name)
+            map_id, kind = resolve_input_identifier(map_name)
             mapset = map_id.split("@", 1)[1]
             if mapset not in categorized:
                 categorized[mapset] = {"raster": [], "strds": []}
-            if grass_interface.name_is_stds(map_id):
-                categorized[mapset]["strds"].append(map_id)
-            elif grass_interface.name_is_map(map_id):
-                categorized[mapset]["raster"].append(map_id)
-            else:
-                raise ValueError(f"Input map <{map_id}> not found in GRASS database.")
-    # Add the raster mask from the current mapset
-    if grass_interface.has_mask():
-        current_mapset = grass_interface.get_current_mapset()
-        if current_mapset not in categorized:
-            categorized[current_mapset] = {"raster": [], "strds": []}
-        categorized[current_mapset]["raster"].append(f"MASK@{current_mapset}")
+            categorized[mapset][kind].append(map_id)
+    if grass_interface.mask_source is not None:
+        mapset = grass_interface.mask_source.split("@", 1)[1]
+        maps = categorized.setdefault(mapset, {"raster": [], "strds": []})["raster"]
+        if grass_interface.mask_source not in maps:
+            maps.append(grass_interface.mask_source)
     return categorized
 
 
@@ -360,10 +355,10 @@ def create_request(
 
     config_reader = ConfigReader(conf_file_path)
     # Pack the input
-    sim_config: SimulationConfig = config_reader.get_sim_params()
+    sim_config: SimulationConfig = config_reader.sim_config
 
     # Get GRASS params with session detection and priority logic
-    config_grass_params = config_reader.get_grass_params()
+    config_grass_params = config_reader.grass_params
     grass_params, _source = get_grass_params_from_env(config_grass_params)
 
     input_info = pack_input(sim_config, grass_params)

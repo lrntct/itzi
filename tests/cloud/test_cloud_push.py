@@ -12,7 +12,7 @@ import pytest
 from itzi_core.const import TemporalType
 from itzi_core.data_containers import SimulationConfig, SurfaceFlowParameters
 
-from itzi.grass_session import GrassParams
+from itzi.grass.session import GrassParams
 
 LOCAL_CRS_WKT = (
     'ENGCRS["Local engineering CRS",EDATUM["Unknown engineering datum"],'
@@ -30,14 +30,14 @@ def test_create_request_uses_project_slug(monkeypatch: pytest.MonkeyPatch, tmp_p
         end_time=datetime(2025, 1, 1, 13, tzinfo=UTC),
         record_step=timedelta(minutes=15),
         temporal_type=TemporalType.ABSOLUTE,
-        input_map_names={"dem": "dem"},
-        output_map_names={"h": "depth"},
+        input_map_names={"ground_elevation": "dem"},
+        output_map_names={"water_depth": "depth"},
         surface_flow_parameters=SurfaceFlowParameters(),
     )
     grass_params = GrassParams(grassdata=str(tmp_path), location="project", mapset="mapset")
     config_reader = types.SimpleNamespace(
-        get_sim_params=lambda: sim_config,
-        get_grass_params=lambda: grass_params,
+        sim_config=sim_config,
+        grass_params=grass_params,
     )
     dataset_path = tmp_path / "input.tgz"
     input_info = types.SimpleNamespace(
@@ -59,8 +59,6 @@ def test_create_request_uses_project_slug(monkeypatch: pytest.MonkeyPatch, tmp_p
 
     assert request.project_slug == "flood-studies"
     assert "project_id" not in request.model_dump()
-    assert request.sim_config.stats_file == ""
-    assert request.sim_config.surface_flow_parameters.vrouting == 0.1
     assert "hotstart_config" not in request.sim_config.model_dump()
     assert set(request.sim_config.model_dump()) == {
         "start_time",
@@ -70,7 +68,6 @@ def test_create_request_uses_project_slug(monkeypatch: pytest.MonkeyPatch, tmp_p
         "input_map_names",
         "output_map_names",
         "surface_flow_parameters",
-        "stats_file",
         "dtinf",
         "infiltration_model",
         "swmm_inp",
@@ -84,7 +81,6 @@ def test_create_request_uses_project_slug(monkeypatch: pytest.MonkeyPatch, tmp_p
         "cfl",
         "theta",
         "g",
-        "vrouting",
         "dtmax",
         "slope_threshold",
         "max_slope",
@@ -105,12 +101,11 @@ def test_pack_input_produces_stable_hash_for_identical_inputs(
         def __init__(self, *args: object, **kwargs: object) -> None:
             self.yr = 3
             self.xr = 4
-            self.dx = 5.0
-            self.dy = 6.0
+            self.region = types.SimpleNamespace(ewres=5.0, nsres=6.0)
 
-    fake_grass_interface_module = types.ModuleType("itzi.providers.grass_interface")
+    fake_grass_interface_module = types.ModuleType("itzi.grass.interface")
     fake_grass_interface_module.GrassInterface = FakeGrassInterface
-    monkeypatch.setitem(sys.modules, "itzi.providers.grass_interface", fake_grass_interface_module)
+    monkeypatch.setitem(sys.modules, "itzi.grass.interface", fake_grass_interface_module)
     monkeypatch.setattr(push, "GrassSessionManager", lambda *_args, **_kwargs: nullcontext())
     monkeypatch.setattr(
         push,
@@ -131,8 +126,8 @@ def test_pack_input_produces_stable_hash_for_identical_inputs(
         end_time=datetime(2025, 1, 1, 13, tzinfo=UTC),
         record_step=timedelta(minutes=15),
         temporal_type=TemporalType.ABSOLUTE,
-        input_map_names={"dem": "dem@PERMANENT"},
-        output_map_names={"h": "depth@PERMANENT"},
+        input_map_names={"ground_elevation": "dem@PERMANENT"},
+        output_map_names={"water_depth": "depth@PERMANENT"},
         surface_flow_parameters=SurfaceFlowParameters(),
     )
     grass_params = GrassParams(
@@ -150,11 +145,30 @@ def test_pack_input_produces_stable_hash_for_identical_inputs(
         assert first_input_info.dataset_bytes == second_input_info.dataset_bytes
         assert first_input_info.domain_info == second_input_info.domain_info
         assert first_input_info.sim_config == second_input_info.sim_config
-        assert first_input_info.sim_config.input_map_names == {"dem": "dem"}
-        assert first_input_info.sim_config.output_map_names == {"h": "depth"}
+        assert first_input_info.sim_config.input_map_names == {"ground_elevation": "dem"}
+        assert first_input_info.sim_config.output_map_names == {"water_depth": "depth"}
     finally:
         shutil.rmtree(first_input_info.dataset_path.parent, ignore_errors=True)
         shutil.rmtree(second_input_info.dataset_path.parent, ignore_errors=True)
+
+
+def test_list_input_maps_includes_explicit_mask(monkeypatch: pytest.MonkeyPatch) -> None:
+    from itzi.cloud import push
+
+    utils = types.ModuleType("itzi.grass.utils")
+    utils.resolve_input_identifier = lambda name: {
+        "dem": ("dem@PERMANENT", "raster"),
+        "rain": ("rain@PERMANENT", "strds"),
+    }[name]
+    monkeypatch.setitem(sys.modules, "itzi.grass.utils", utils)
+    grass_interface = types.SimpleNamespace(mask_source="custom_mask@inputs")
+
+    assert push.list_input_maps(
+        {"ground_elevation": "dem", "rainfall_rate": "rain"}, grass_interface
+    ) == {
+        "PERMANENT": {"raster": ["dem@PERMANENT"], "strds": ["rain@PERMANENT"]},
+        "inputs": {"raster": ["custom_mask@inputs"], "strds": []},
+    }
 
 
 def test_to_zarr_slices_relative_coordinates_in_their_declared_units(
@@ -205,8 +219,8 @@ def test_to_zarr_slices_relative_coordinates_in_their_declared_units(
         end_time=relative_start + timedelta(minutes=10),
         record_step=timedelta(minutes=5),
         temporal_type=TemporalType.RELATIVE,
-        input_map_names={"rain": "rain", "inflow": "inflow"},
-        output_map_names={"h": "depth"},
+        input_map_names={"rainfall_rate": "rain", "inflow": "inflow"},
+        output_map_names={"water_depth": "depth"},
         surface_flow_parameters=SurfaceFlowParameters(),
     )
     grass_params = GrassParams(
@@ -266,8 +280,8 @@ def test_to_zarr_preserves_absolute_datetime_coordinates(
         end_time=datetime(2025, 1, 1, 12, 10),
         record_step=timedelta(minutes=5),
         temporal_type=TemporalType.ABSOLUTE,
-        input_map_names={"rain": "rain"},
-        output_map_names={"h": "depth"},
+        input_map_names={"rainfall_rate": "rain"},
+        output_map_names={"water_depth": "depth"},
         surface_flow_parameters=SurfaceFlowParameters(),
     )
     grass_params = GrassParams(

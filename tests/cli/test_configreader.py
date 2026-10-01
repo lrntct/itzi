@@ -1,12 +1,12 @@
 """Test the reading and parsing of the config file."""
 
-from configparser import ConfigParser
-from datetime import datetime, timedelta
 import logging
+from configparser import ConfigParser
+from dataclasses import asdict
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
-
 from itzi_core.const import DefaultValues, InfiltrationModelType, TemporalType
 from itzi_core.data_containers import SurfaceFlowParameters
 
@@ -38,7 +38,7 @@ def make_config_dict(
 
     config_dict = {
         "time": time or {"duration": "00:01:00", "record_step": "00:00:30"},
-        "input": input_maps or {"dem": "z", "friction": "n"},
+        "input": input_maps or {"ground_elevation": "z", "friction": "n"},
         "output": output or {"prefix": "out", "values": "water_depth"},
     }
 
@@ -59,19 +59,21 @@ def test_reader_uses_defaults_when_optional_sections_are_missing(tmp_path):
     config_file = write_config_file(tmp_path, make_config_dict())
 
     reader = ConfigReader(config_file)
-    sim_config = reader.get_sim_params()
-    grass_params = reader.get_grass_params()
+    sim_config = reader.sim_config
+    grass_params = reader.grass_params
 
     assert sim_config.hotstart_config is None
     assert sim_config.surface_flow_parameters == SurfaceFlowParameters()
-    assert reader.get_stats_file() is None
+    assert reader.stats_file is None
     assert sim_config.dtinf == DefaultValues.DTINF
     assert sim_config.swmm_inp is None
     assert sim_config.drainage_output is None
     assert sim_config.orifice_coeff == DefaultValues.ORIFICE_COEFF
     assert sim_config.free_weir_coeff == DefaultValues.FREE_WEIR_COEFF
     assert sim_config.submerged_weir_coeff == DefaultValues.SUBMERGED_WEIR_COEFF
-    assert grass_params.model_dump() == {
+    assert sim_config.input_map_names == {"ground_elevation": "z", "friction": "n"}
+    assert sim_config.output_map_names == {"water_depth": "out_water_depth"}
+    assert asdict(grass_params) == {
         "grassdata": None,
         "location": None,
         "mapset": None,
@@ -79,6 +81,17 @@ def test_reader_uses_defaults_when_optional_sections_are_missing(tmp_path):
         "mask": None,
         "grass_bin": None,
     }
+
+
+def test_reader_rejects_partial_grass_context(tmp_path):
+    config_file = write_config_file(
+        tmp_path, make_config_dict(grass={"grassdata": "/grassdata", "location": "project"})
+    )
+
+    with pytest.raises(
+        RuntimeError, match="GRASS database, location, and mapset must be supplied together"
+    ):
+        ConfigReader(config_file)
 
 
 @pytest.mark.parametrize(
@@ -101,8 +114,8 @@ def test_reader_exposes_stats_file_separately_from_simulation_config(
 
     reader = ConfigReader(config_file)
 
-    assert reader.get_stats_file() == expected_stats_file
-    assert "stats_file" not in type(reader.get_sim_params()).model_fields
+    assert reader.stats_file == expected_stats_file
+    assert "stats_file" not in type(reader.sim_config).model_fields
 
 
 def test_reader_normalizes_deprecated_aliases(tmp_path, caplog):
@@ -112,10 +125,13 @@ def test_reader_normalizes_deprecated_aliases(tmp_path, caplog):
             input_maps={
                 "dem": "z",
                 "friction": "n",
+                "rain": "legacy_rain",
+                "bctype": "legacy_boundary_type",
+                "bcval": "legacy_boundary_value",
                 "start_h": "legacy_depth",
                 "drainage_capacity": "legacy_losses",
             },
-            output={"prefix": "legacy", "values": "h, drainage_cap"},
+            output={"prefix": "legacy", "values": "h, drainage_cap, hmax, v, vdir, vmax, qx, qy"},
         ),
     )
 
@@ -123,22 +139,105 @@ def test_reader_normalizes_deprecated_aliases(tmp_path, caplog):
     with caplog.at_level(logging.WARNING, logger="itzi"):
         itzi_logger.addHandler(caplog.handler)
         try:
-            sim_config = ConfigReader(config_file).get_sim_params()
+            sim_config = ConfigReader(config_file).sim_config
         finally:
             itzi_logger.removeHandler(caplog.handler)
 
+    assert sim_config.input_map_names["ground_elevation"] == "z"
+    assert sim_config.input_map_names["rainfall_rate"] == "legacy_rain"
+    assert sim_config.input_map_names["boundary_type"] == "legacy_boundary_type"
+    assert sim_config.input_map_names["boundary_value"] == "legacy_boundary_value"
     assert sim_config.input_map_names["water_depth"] == "legacy_depth"
     assert sim_config.input_map_names["losses"] == "legacy_losses"
     assert sim_config.output_map_names["water_depth"] == "legacy_water_depth"
     assert sim_config.output_map_names["mean_losses"] == "legacy_mean_losses"
+    assert sim_config.output_map_names["max_water_depth"] == "legacy_max_water_depth"
+    assert sim_config.output_map_names["flow_speed"] == "legacy_flow_speed"
+    assert (
+        sim_config.output_map_names["flow_velocity_direction"] == "legacy_flow_velocity_direction"
+    )
+    assert sim_config.output_map_names["max_flow_speed"] == "legacy_max_flow_speed"
+    assert sim_config.output_map_names["flow_rate_x"] == "legacy_flow_rate_x"
+    assert sim_config.output_map_names["flow_rate_y"] == "legacy_flow_rate_y"
 
     warning_messages = [record.message for record in caplog.records]
-    assert any("Input 'start_h' is deprecated" in message for message in warning_messages)
-    assert any(
-        "Input 'drainage_capacity' is deprecated" in message for message in warning_messages
+    for old_name, new_name in [
+        ("dem", "ground_elevation"),
+        ("rain", "rainfall_rate"),
+        ("bctype", "boundary_type"),
+        ("bcval", "boundary_value"),
+        ("start_h", "water_depth"),
+        ("drainage_capacity", "losses"),
+    ]:
+        assert any(
+            f"Input '{old_name}' is deprecated. Use '{new_name}' instead." in message
+            for message in warning_messages
+        )
+    for old_name, new_name in [
+        ("h", "water_depth"),
+        ("drainage_cap", "mean_losses"),
+        ("hmax", "max_water_depth"),
+        ("v", "flow_speed"),
+        ("vdir", "flow_velocity_direction"),
+        ("vmax", "max_flow_speed"),
+        ("qx", "flow_rate_x"),
+        ("qy", "flow_rate_y"),
+    ]:
+        assert any(
+            f"Output '{old_name}' is deprecated. Use '{new_name}' instead." in message
+            for message in warning_messages
+        )
+
+
+def test_reader_prefers_canonical_names_over_input_aliases(tmp_path):
+    config_file = write_config_file(
+        tmp_path,
+        make_config_dict(
+            input_maps={
+                "dem": "legacy_elevation",
+                "ground_elevation": "canonical_elevation",
+                "friction": "n",
+            }
+        ),
     )
-    assert any("Output 'h' is deprecated" in message for message in warning_messages)
-    assert any("Output 'drainage_cap' is deprecated" in message for message in warning_messages)
+
+    sim_config = ConfigReader(config_file).sim_config
+
+    assert sim_config.input_map_names["ground_elevation"] == "canonical_elevation"
+
+
+def test_reader_rejects_max_slope_below_slope_threshold(tmp_path):
+    config_file = write_config_file(
+        tmp_path,
+        make_config_dict(options={"slope_threshold": "0.9", "max_slope": "0.8"}),
+    )
+
+    with pytest.raises(
+        RuntimeError, match="max_slope must be greater than or equal to slope_threshold"
+    ):
+        ConfigReader(config_file)
+
+
+@pytest.mark.parametrize("legacy_name", ["verror", "volume_error"])
+def test_reader_normalizes_legacy_created_volume_aliases(tmp_path, caplog, legacy_name):
+    config_file = write_config_file(
+        tmp_path,
+        make_config_dict(output={"prefix": "legacy", "values": legacy_name}),
+    )
+
+    itzi_logger = logging.getLogger("itzi")
+    with caplog.at_level(logging.WARNING, logger="itzi"):
+        itzi_logger.addHandler(caplog.handler)
+        try:
+            sim_config = ConfigReader(config_file).sim_config
+        finally:
+            itzi_logger.removeHandler(caplog.handler)
+
+    assert sim_config.output_map_names == {"created_volume": "legacy_created_volume"}
+    assert any(
+        f"Output '{legacy_name}' is deprecated. Use 'created_volume' instead." in record.message
+        for record in caplog.records
+    )
 
 
 @pytest.mark.parametrize(
@@ -181,7 +280,7 @@ def test_reader_accepts_supported_time_combinations(
 ):
     config_file = write_config_file(tmp_path, make_config_dict(time=time_section))
 
-    sim_config = ConfigReader(config_file).get_sim_params()
+    sim_config = ConfigReader(config_file).sim_config
 
     assert sim_config.temporal_type == expected_temporal_type
     assert sim_config.start_time == expected_start
@@ -218,7 +317,7 @@ def test_reader_rejects_mutually_exclusive_initial_conditions(tmp_path):
         tmp_path,
         make_config_dict(
             input_maps={
-                "dem": "z",
+                "ground_elevation": "z",
                 "friction": "n",
                 "water_depth": "start_h",
                 "water_surface_elevation": "start_wse",
@@ -235,7 +334,7 @@ def test_reader_infers_green_ampt_model_from_complete_parameter_set(tmp_path):
         tmp_path,
         make_config_dict(
             input_maps={
-                "dem": "z",
+                "ground_elevation": "z",
                 "friction": "n",
                 "effective_porosity": "porosity",
                 "capillary_pressure": "pressure",
@@ -244,7 +343,7 @@ def test_reader_infers_green_ampt_model_from_complete_parameter_set(tmp_path):
         ),
     )
 
-    sim_config = ConfigReader(config_file).get_sim_params()
+    sim_config = ConfigReader(config_file).sim_config
 
     assert sim_config.infiltration_model == InfiltrationModelType.GREEN_AMPT
 
@@ -254,7 +353,7 @@ def test_reader_requires_all_green_ampt_maps(tmp_path):
         tmp_path,
         make_config_dict(
             input_maps={
-                "dem": "z",
+                "ground_elevation": "z",
                 "friction": "n",
                 "effective_porosity": "porosity",
                 "capillary_pressure": "pressure",
@@ -281,7 +380,7 @@ def test_reader_falls_back_to_config_dir_for_relative_swmm_inp(tmp_path, monkeyp
         make_config_dict(drainage={"swmm_inp": "swmm_config.inp"}),
     )
 
-    sim_config = ConfigReader(config_file).get_sim_params()
+    sim_config = ConfigReader(config_file).sim_config
 
     assert sim_config.swmm_inp == Path(config_swmm_inp)
 

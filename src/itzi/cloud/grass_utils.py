@@ -19,7 +19,7 @@ import os
 from enum import Enum
 from pathlib import Path
 
-from itzi.grass_session import GrassParams
+from itzi.grass.session import GrassParams
 
 
 class GrassParamsSource(Enum):

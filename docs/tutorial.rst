@@ -101,15 +101,15 @@ It should look like the following:
     record_step = 00:05:00
 
     [input]
-    dem = elev_lid792_5m@PERMANENT
+    ground_elevation = elev_lid792_5m@PERMANENT
     friction = n@PERMANENT
-    rain = rain@PERMANENT
-    bctype = bctype@PERMANENT
-    bcval = bcvalue@PERMANENT
+    rainfall_rate = rain@PERMANENT
+    boundary_type = bctype@PERMANENT
+    boundary_value = bcvalue@PERMANENT
 
     [output]
     prefix = nc_itzi_tutorial
-    values = water_depth, wse, v, vdir, mean_boundary_flow
+    values = water_depth, max_water_depth, water_surface_elevation, flow_speed, flow_velocity_direction, mean_boundary_flow
 
     [statistics]
     stats_file = nc_itzi_tutorial.csv
@@ -130,7 +130,7 @@ This should fail with an error like this one:
 
 .. code:: sh
 
-    WARNING: Error during execution: itzi.itzi_error.MassBalanceError: Mass balance error 0.07 exceeds threshold 0.05
+    WARNING: Error during execution: itzi_core.itzi_error.MassBalanceError: Created volume ratio 0.07 exceeds threshold 0.05
 
 This means that some numerical instabilities have been detected, and the simulation automatically stopped.
 This prevents the software to run for a long time, only to get bad results at the end.
@@ -152,7 +152,7 @@ Now you can run the simulation again, with the ``-o`` flag to overwrite the data
     itzi run -o <parameter_file_name>
 
 Now, the simulation should run until the end.
-At the end of the simulation, Itzï should have generated five Space-Time
+At the end of the simulation, Itzï should have generated six Space-Time
 Raster Dataset (STRDS) in the form:
 
 .. code:: sh
@@ -198,15 +198,17 @@ Unfortunately, two issues limit the use for the modelling of culvert:
 * SWMM needs to have a connected *outfall* node in the network model
 * The Itzï coupling code is designed for manhole, not culvert entrance.
 
-We can circumvent those limitations by first, adding an outlet at a higher elevation, linked to the rest of the network by a dummy pipe,
-and second, set the coupling surface to a large surface (here we'll set it equal to the cell surface).
+Here, we can circumvent those limitations by doing the following:
+
+1.Create a dummy outfall node at a higher elevation, linked to the rest of the network by a dummy pipe,
+2.Set the coupling surface to a large surface (here we'll set it equal to the cell surface).
 
 
 SWMM configuration file
 ~~~~~~~~~~~~~~~~~~~~~~~
 
 The description of the drainage network is done in a classic SWMM configuration file.
-More information could be found in the `SWMM user's manual <https://nepis.epa.gov/Exe/ZyPURL.cgi?Dockey=P100N3J6.txt>`__.
+More information could be found in the `SWMM user's manual <https://www.epa.gov/system/files/documents/2022-04/swmm-users-manual-version-5.2.pdf>`__.
 
 .. note:: *START_DATE* and *START_TIME* are not taken into account during a coupled simulation.
           The drainage model always starts and stops at the same time than the surface model.
@@ -278,7 +280,7 @@ More information could be found in the `SWMM user's manual <https://nepis.epa.go
 
 Here, *J0* and *J1* are the input and output nodes of the culvert, and *C0* is the culvert itself.
 The latter is made of two pipes of 1.5m of diameter.
-The outfall *O2* and the link *C1* are added to comply with the SWMM rule needing them.
+The outfall *O2* and the link *C1* are added to comply with the SWMM requirement of having at least one outfall.
 
 
 Update the Itzï's parameter file
@@ -293,15 +295,15 @@ The parameter file of created in the precedent tutorial could be used and adapte
     record_step = 00:05:00
 
     [input]
-    dem = elev_lid792_5m@PERMANENT
+    ground_elevation = elev_lid792_5m@PERMANENT
     friction = n@PERMANENT
-    rain = rain@PERMANENT
-    bctype = bctype@PERMANENT
-    bcval = bcvalue@PERMANENT
+    rainfall_rate = rain@PERMANENT
+    boundary_type = bctype@PERMANENT
+    boundary_value = bcvalue@PERMANENT
 
     [output]
     prefix = nc_itzi_tutorial_drainage
-    values = water_depth, v, vdir
+    values = water_depth, flow_speed, flow_velocity_direction
 
     [statistics]
     stats_file = nc_itzi_tutorial_drainage.csv
