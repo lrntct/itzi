@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import argparse
 import os
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import itzi.messenger as msgr
@@ -52,53 +51,25 @@ def itzi_cloud_login(cli_args) -> None:
         login(email=email, password=password)
 
 
-def itzi_cloud_push(cli_args) -> None:
-    """Pack the input data, then submit a request to the cloud compute provider."""
-    from itzi.cloud.auth import check_login, get_token
-    from itzi.cloud.metadata_storage import save_simulation_metadata
-    from itzi.cloud.push import confirm_upload, create_request, request_simulation, upload_input
-
+def itzi_cloud_push(cli_args: argparse.Namespace) -> None:
+    """Build cloud Input archives from YAML ensembles."""
     os.environ["ITZI_VERBOSE"] = str(VerbosityLevel.MESSAGE)
 
-    if cli_args.project is None:
-        msgr.fatal("Cloud project ID is required. Use --project <project_id>.")
+    from itzi.cloud.auth import check_login, get_token
 
     email = check_login()
     session_token = get_token(email)
+    from itzi.cloud.archive import build_archives
 
     for conf_file in cli_args.config_file:
-        conf_file_name = Path(conf_file).name
-        request_data, input_path, grass_params = create_request(
-            cli_args.project, conf_file, force=cli_args.force
-        )
         try:
-            response = request_simulation(session_token=session_token, metadata=request_data)
-            msgr.message(f"{conf_file_name}: Uploading input data...")
-            upload_ok = upload_input(
-                signed_url=response.upload_url,
-                payload=input_path,
-                method=response.upload_method,
-                headers=response.upload_headers,
-            )
-            if upload_ok:
-                # Send upload confirmation to API
-                confirm_upload(session_token, response.fingerprint)
-                # Save metadata for later retrieval
-                try:
-                    save_simulation_metadata(
-                        fingerprint=response.fingerprint,
-                        email=email,
-                        config_file=str(conf_file),
-                        grass_params=grass_params,
-                    )
-                    msgr.debug(f"Saved metadata for simulation {response.fingerprint}")
-                    msgr.message(
-                        f"{conf_file_name}: Successful submission. Fingerprint: {response.fingerprint}"
-                    )
-                except Exception as e:
-                    msgr.warning(f"Failed to save metadata: {e}")
-        except Exception as e:
-            msgr.warning(f"{conf_file_name}: Error during cloud submission: {e}")
+            for archive in build_archives(conf_file, session_token):
+                msgr.message(
+                    f"{archive.source.source.path} document {archive.source.source.document_index}: "
+                    f"built {archive.path} ({archive.size_bytes} bytes, SHA-256 {archive.sha256})"
+                )
+        except Exception as error:  # noqa: BLE001 - surface resolver, reader and HTTP errors.
+            msgr.fatal(f"{conf_file}: Input archive build failed: {error}")
 
 
 def itzi_cloud_status(cli_args) -> None:

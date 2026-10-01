@@ -19,21 +19,18 @@ def test_cloud_login_parser_accepts_options():
     assert args.logout is False
 
 
-def test_cloud_push_parser_accepts_batch_and_flags():
-    args = build_parser().parse_args(
-        ["cloud", "push", "-p", "proj-abc123", "-f", "a.ini", "b.ini"]
-    )
+def test_cloud_push_parser_accepts_yaml_batch():
+    args = build_parser().parse_args(["cloud", "push", "-p", "proj-abc123", "a.yaml", "b.yaml"])
 
     assert args.command == "cloud"
     assert args.cloud_command == "push"
     assert args.project == "proj-abc123"
-    assert args.force is True
-    assert args.config_file == ["a.ini", "b.ini"]
+    assert args.config_file == ["a.yaml", "b.yaml"]
 
 
 def test_cloud_push_parser_requires_project_id():
     with pytest.raises(SystemExit):
-        build_parser().parse_args(["cloud", "push", "sim.ini"])
+        build_parser().parse_args(["cloud", "push", "sim.yaml"])
 
 
 def test_cloud_push_help_requests_public_project_id(capsys):
@@ -44,6 +41,7 @@ def test_cloud_push_help_requests_public_project_id(capsys):
     help_text = capsys.readouterr().out
     assert "--project PROJECT_ID" in help_text
     assert "Project ID (from cloud project --list)." in help_text
+    assert ".yaml ensemble configuration files" in help_text
 
 
 def test_cloud_status_parser_accepts_optional_fingerprint():
@@ -112,7 +110,7 @@ def test_main_prints_cloud_help_without_subcommand(capsys):
     ("argv", "expected_handler"),
     [
         (["cloud", "login"], "itzi_cloud_login"),
-        (["cloud", "push", "-p", "proj-abc123", "sim.ini"], "itzi_cloud_push"),
+        (["cloud", "push", "-p", "proj-abc123", "sim.yaml"], "itzi_cloud_push"),
         (["cloud", "status"], "itzi_cloud_status"),
         (["cloud", "project", "--list"], "itzi_cloud_project"),
         (["cloud", "pull", "fp-123"], "itzi_cloud_pull"),

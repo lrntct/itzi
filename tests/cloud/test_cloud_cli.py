@@ -124,190 +124,38 @@ def test_itzi_cloud_login_prompts_for_password(monkeypatch):
     assert calls == [("user@example.com", "secret")]
 
 
-def test_itzi_cloud_push_submits_and_saves_metadata(monkeypatch):
-    calls = {
-        "create_request": [],
-        "request_simulation": [],
-        "upload_input": [],
-        "confirm_upload": [],
-        "save_simulation_metadata": [],
-    }
-    request_data = SimpleNamespace(dataset_hash="hash-123")
-    simulation_response = SimpleNamespace(
-        upload_url="https://example.test/upload",
-        upload_method="POST",
-        upload_headers={"x-upload-token": "upload-123"},
-        fingerprint="fp-123",
-    )
-    grass_params = GrassParams(grassdata="/db", location="loc", mapset="mapset")
+def test_itzi_cloud_push_builds_yaml_archives_without_submitting(monkeypatch):
+    from pathlib import Path
+
+    calls = []
     messages = []
-    monkeypatch.delenv("ITZI_VERBOSE", raising=False)
     install_stub_module(
         monkeypatch,
         "itzi.cloud.auth",
         check_login=lambda: "user@example.com",
-        get_token=lambda email: "token-123",
+        get_token=lambda email: "token",
     )
     install_stub_module(
         monkeypatch,
-        "itzi.cloud.push",
-        create_request=lambda project, conf_file, force: (
-            calls["create_request"].append((project, conf_file, force))
-            or (request_data, "/tmp/input.tgz", grass_params)
+        "itzi.cloud.archive",
+        build_archives=lambda path, token: (
+            calls.append((path, token))
+            or (
+                SimpleNamespace(
+                    source=SimpleNamespace(
+                        source=SimpleNamespace(path=Path(path), document_index=0)
+                    ),
+                    path=Path("/tmp/input.tzst"),
+                    size_bytes=42,
+                    sha256="a" * 64,
+                ),
+            )
         ),
-        request_simulation=lambda session_token, metadata: (
-            calls["request_simulation"].append((session_token, metadata)) or simulation_response
-        ),
-        upload_input=lambda signed_url, payload, method, headers: (
-            calls["upload_input"].append((signed_url, payload, method, headers)) or True
-        ),
-        confirm_upload=lambda session_token, fingerprint: calls["confirm_upload"].append(
-            (session_token, fingerprint)
-        ),
-    )
-    install_stub_module(
-        monkeypatch,
-        "itzi.cloud.metadata_storage",
-        save_simulation_metadata=lambda **kwargs: calls["save_simulation_metadata"].append(kwargs),
     )
     monkeypatch.setattr("itzi.cloud.cli.msgr.message", messages.append)
-
-    itzi_cloud_push(
-        argparse.Namespace(project="flood-studies", force=True, config_file=["sim.ini"])
-    )
-
-    assert os.environ["ITZI_VERBOSE"] == str(VerbosityLevel.MESSAGE)
-    assert calls["create_request"] == [("flood-studies", "sim.ini", True)]
-    assert calls["request_simulation"] == [("token-123", request_data)]
-    assert calls["upload_input"] == [
-        (
-            "https://example.test/upload",
-            "/tmp/input.tgz",
-            "POST",
-            {"x-upload-token": "upload-123"},
-        )
-    ]
-    assert calls["confirm_upload"] == [("token-123", "fp-123")]
-    assert calls["save_simulation_metadata"] == [
-        {
-            "fingerprint": "fp-123",
-            "email": "user@example.com",
-            "config_file": "sim.ini",
-            "grass_params": grass_params,
-        }
-    ]
-    assert messages == [
-        "sim.ini: Uploading input data...",
-        "sim.ini: Successful submission. Fingerprint: fp-123",
-    ]
-
-
-def test_itzi_cloud_push_warns_when_metadata_save_fails(monkeypatch):
-    warnings = []
-    request_data = SimpleNamespace(dataset_hash="hash-123")
-    grass_params = GrassParams(grassdata="/db", location="loc", mapset="mapset")
-    install_stub_module(
-        monkeypatch,
-        "itzi.cloud.auth",
-        check_login=lambda: "user@example.com",
-        get_token=lambda email: "token-123",
-    )
-    install_stub_module(
-        monkeypatch,
-        "itzi.cloud.push",
-        create_request=lambda project, conf_file, force: (
-            request_data,
-            "/tmp/input.tgz",
-            grass_params,
-        ),
-        request_simulation=lambda session_token, metadata: SimpleNamespace(
-            upload_url="https://example.test/upload",
-            upload_method="PUT",
-            upload_headers={},
-            fingerprint="fp-123",
-        ),
-        upload_input=lambda **kwargs: True,
-        confirm_upload=lambda session_token, fingerprint: None,
-    )
-    install_stub_module(
-        monkeypatch,
-        "itzi.cloud.metadata_storage",
-        save_simulation_metadata=lambda **kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
-    )
-    monkeypatch.setattr("itzi.cloud.cli.msgr.warning", warnings.append)
-
-    itzi_cloud_push(
-        argparse.Namespace(project="flood-studies", force=False, config_file=["sim.ini"])
-    )
-
-    assert warnings == ["Failed to save metadata: boom"]
-
-
-def test_itzi_cloud_push_warns_when_submission_fails(monkeypatch):
-    warnings = []
-    request_data = SimpleNamespace(dataset_hash="hash-123")
-    grass_params = GrassParams(grassdata="/db", location="loc", mapset="mapset")
-    install_stub_module(
-        monkeypatch,
-        "itzi.cloud.auth",
-        check_login=lambda: "user@example.com",
-        get_token=lambda email: "token-123",
-    )
-    install_stub_module(
-        monkeypatch,
-        "itzi.cloud.push",
-        create_request=lambda project, conf_file, force: (
-            request_data,
-            "/tmp/input.tgz",
-            grass_params,
-        ),
-        request_simulation=lambda session_token, metadata: (_ for _ in ()).throw(
-            RuntimeError("boom")
-        ),
-        upload_input=lambda **kwargs: pytest.fail("upload should not run"),
-        confirm_upload=lambda **kwargs: pytest.fail("confirm should not run"),
-    )
-    install_stub_module(
-        monkeypatch,
-        "itzi.cloud.metadata_storage",
-        save_simulation_metadata=lambda **kwargs: pytest.fail("metadata should not be saved"),
-    )
-    monkeypatch.setattr("itzi.cloud.cli.msgr.warning", warnings.append)
-
-    itzi_cloud_push(
-        argparse.Namespace(project="flood-studies", force=False, config_file=["sim.ini"])
-    )
-
-    assert warnings == ["sim.ini: Error during cloud submission: boom"]
-
-
-def test_itzi_cloud_push_requires_project_id(monkeypatch):
-    install_stub_module(
-        monkeypatch,
-        "itzi.cloud.auth",
-        check_login=lambda: pytest.fail("login should not be checked"),
-        get_token=lambda email: pytest.fail("token should not be requested"),
-    )
-    install_stub_module(
-        monkeypatch,
-        "itzi.cloud.push",
-        create_request=lambda *args: pytest.fail("request should not be created"),
-        request_simulation=lambda **kwargs: pytest.fail("simulation should not be requested"),
-        upload_input=lambda **kwargs: pytest.fail("input should not be uploaded"),
-        confirm_upload=lambda *args: pytest.fail("upload should not be confirmed"),
-    )
-    install_stub_module(
-        monkeypatch,
-        "itzi.cloud.metadata_storage",
-        save_simulation_metadata=lambda **kwargs: pytest.fail("metadata should not be saved"),
-    )
-    monkeypatch.setattr(
-        "itzi.cloud.cli.msgr.fatal",
-        lambda message: (_ for _ in ()).throw(RuntimeError(message)),
-    )
-
-    with pytest.raises(RuntimeError, match="Cloud project ID is required"):
-        itzi_cloud_push(argparse.Namespace(project=None, force=False, config_file=["sim.ini"]))
+    itzi_cloud_push(argparse.Namespace(project="project-id", config_file=["one.yml"]))
+    assert calls == [("one.yml", "token")]
+    assert "built /tmp/input.tzst" in messages[0]
 
 
 def test_itzi_cloud_status_displays_single_simulation(monkeypatch):

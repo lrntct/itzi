@@ -46,7 +46,7 @@ def add_cloud_subcommands(cloud_parser: argparse.ArgumentParser) -> None:
     )
 
     cloud_push_parser = cloud_subparser.add_parser(
-        "push", help="submit a simulation to run in the cloud"
+        "push", help="Submit ensembles for cloud processing from YAML files"
     )
     cloud_push_parser.set_defaults(cloud_handler="push")
     cloud_push_parser.add_argument(
@@ -56,11 +56,10 @@ def add_cloud_subcommands(cloud_parser: argparse.ArgumentParser) -> None:
         metavar="PROJECT_ID",
         help="Project ID (from cloud project --list).",
     )
-    cloud_push_parser.add_argument("-f", "--force", action="store_true", help="Force re-run.")
     cloud_push_parser.add_argument(
         "config_file",
         nargs="+",
-        help=("An Itzï configuration file (if several given, run in batch mode.)"),
+        help="One or more .yaml ensemble configuration files.",
     )
 
     cloud_status_parser = cloud_subparser.add_parser(

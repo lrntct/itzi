@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-import shutil
+import hashlib
 import sys
+import tarfile
 import types
 from contextlib import nullcontext
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import numpy as np
@@ -21,317 +22,348 @@ LOCAL_CRS_WKT = (
 )
 
 
-def test_create_request_uses_project_slug(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    from itzi.cloud import push
-    from itzi.cloud.schemas import DomainInfo
-
-    sim_config = SimulationConfig(
-        start_time=datetime(2025, 1, 1, 12, tzinfo=UTC),
-        end_time=datetime(2025, 1, 1, 13, tzinfo=UTC),
-        record_step=timedelta(minutes=15),
-        temporal_type=TemporalType.ABSOLUTE,
-        input_map_names={"ground_elevation": "dem"},
-        output_map_names={"water_depth": "depth"},
-        surface_flow_parameters=SurfaceFlowParameters(),
-    )
-    grass_params = GrassParams(grassdata=str(tmp_path), location="project", mapset="mapset")
-    config_reader = types.SimpleNamespace(
-        sim_config=sim_config,
-        grass_params=grass_params,
-    )
-    dataset_path = tmp_path / "input.tgz"
-    input_info = types.SimpleNamespace(
-        sim_config=sim_config,
-        dataset_path=dataset_path,
-        dataset_hash="dataset-hash",
-        dataset_bytes=1024,
-        domain_info=DomainInfo(rows=2, cols=3, ewres=5.0, nsres=5.0),
-    )
-    monkeypatch.setattr(push, "ConfigReader", lambda path: config_reader)
-    monkeypatch.setattr(
-        push, "get_grass_params_from_env", lambda config_params: (grass_params, "config")
-    )
-    monkeypatch.setattr(push, "pack_input", lambda config, params: input_info)
-
-    request, request_dataset_path, request_grass_params = push.create_request(
-        "flood-studies", "sim.ini"
-    )
-
-    assert request.project_slug == "flood-studies"
-    assert "project_id" not in request.model_dump()
-    assert "hotstart_config" not in request.sim_config.model_dump()
-    assert set(request.sim_config.model_dump()) == {
-        "start_time",
-        "end_time",
-        "record_step",
-        "temporal_type",
-        "input_map_names",
-        "output_map_names",
-        "surface_flow_parameters",
-        "dtinf",
-        "infiltration_model",
-        "swmm_inp",
-        "drainage_output",
-        "orifice_coeff",
-        "free_weir_coeff",
-        "submerged_weir_coeff",
-    }
-    assert set(request.sim_config.surface_flow_parameters.model_dump()) == {
-        "hmin",
-        "cfl",
-        "theta",
-        "g",
-        "dtmax",
-        "slope_threshold",
-        "max_slope",
-        "max_error",
-    }
-    assert request_dataset_path == dataset_path
-    assert request_grass_params == grass_params
-
-
-@pytest.mark.cloud
-def test_pack_input_produces_stable_hash_for_identical_inputs(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    from itzi.cloud import push
-
-    class FakeGrassInterface:
-        def __init__(self, *args: object, **kwargs: object) -> None:
-            self.yr = 3
-            self.xr = 4
-            self.region = types.SimpleNamespace(ewres=5.0, nsres=6.0)
-
-    fake_grass_interface_module = types.ModuleType("itzi.grass.interface")
-    fake_grass_interface_module.GrassInterface = FakeGrassInterface
-    monkeypatch.setitem(sys.modules, "itzi.grass.interface", fake_grass_interface_module)
-    monkeypatch.setattr(push, "GrassSessionManager", lambda *_args, **_kwargs: nullcontext())
-    monkeypatch.setattr(
-        push,
-        "list_input_maps",
-        lambda *_args, **_kwargs: {"mapset": {"raster": ["dem@mapset"], "strds": []}},
-    )
-
-    def fake_to_zarr(*_args: object, tempdir: Path, **_kwargs: object) -> None:
-        tempdir.mkdir()
-        (tempdir / "attrs.json").write_text("{}")
-        (tempdir / "variables").mkdir()
-        (tempdir / "variables" / "dem").write_text("placeholder")
-
-    monkeypatch.setattr(push, "to_zarr", fake_to_zarr)
-
-    sim_config = SimulationConfig(
-        start_time=datetime(2025, 1, 1, 12, tzinfo=UTC),
-        end_time=datetime(2025, 1, 1, 13, tzinfo=UTC),
-        record_step=timedelta(minutes=15),
-        temporal_type=TemporalType.ABSOLUTE,
-        input_map_names={"ground_elevation": "dem@PERMANENT"},
-        output_map_names={"water_depth": "depth@PERMANENT"},
-        surface_flow_parameters=SurfaceFlowParameters(),
-    )
-    grass_params = GrassParams(
-        grassdata=str(tmp_path / "grassdb"),
-        location="project",
-        mapset="mapset",
-    )
-
-    first_input_info = push.pack_input(sim_config, grass_params)
-    second_input_info = push.pack_input(sim_config, grass_params)
-
-    try:
-        assert first_input_info.dataset_path != second_input_info.dataset_path
-        assert first_input_info.dataset_hash == second_input_info.dataset_hash
-        assert first_input_info.dataset_bytes == second_input_info.dataset_bytes
-        assert first_input_info.domain_info == second_input_info.domain_info
-        assert first_input_info.sim_config == second_input_info.sim_config
-        assert first_input_info.sim_config.input_map_names == {"ground_elevation": "dem"}
-        assert first_input_info.sim_config.output_map_names == {"water_depth": "depth"}
-    finally:
-        shutil.rmtree(first_input_info.dataset_path.parent, ignore_errors=True)
-        shutil.rmtree(second_input_info.dataset_path.parent, ignore_errors=True)
-
-
-def test_list_input_maps_includes_explicit_mask(monkeypatch: pytest.MonkeyPatch) -> None:
-    from itzi.cloud import push
-
-    utils = types.ModuleType("itzi.grass.utils")
-    utils.resolve_input_identifier = lambda name: {
-        "dem": ("dem@PERMANENT", "raster"),
-        "rain": ("rain@PERMANENT", "strds"),
-    }[name]
-    monkeypatch.setitem(sys.modules, "itzi.grass.utils", utils)
-    grass_interface = types.SimpleNamespace(mask_source="custom_mask@inputs")
-
-    assert push.list_input_maps(
-        {"ground_elevation": "dem", "rainfall_rate": "rain"}, grass_interface
-    ) == {
-        "PERMANENT": {"raster": ["dem@PERMANENT"], "strds": ["rain@PERMANENT"]},
-        "inputs": {"raster": ["custom_mask@inputs"], "strds": []},
-    }
-
-
-def test_to_zarr_slices_relative_coordinates_in_their_declared_units(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    import xarray as xr
-
-    from itzi.cloud import push
-
-    dataset = xr.Dataset(
-        data_vars={
-            "rain": (("start_time_rain", "y", "x"), [[[1]], [[2]], [[3]], [[4]]]),
-            "inflow": (
-                ("start_time_inflow", "y", "x"),
-                [[[1]], [[2]], [[3]], [[4]]],
-            ),
-        },
-        coords={
-            "start_time_rain": (
-                "start_time_rain",
-                [0, 5, 10, 15],
-                {"units": "minutes"},
-            ),
-            "start_time_inflow": (
-                "start_time_inflow",
-                [0, 300, 600, 900],
-                {"units": "seconds"},
-            ),
-            "end_time_rain": (
-                "start_time_rain",
-                [5, 10, 15, 20],
-                {"units": "minutes"},
-            ),
-            "end_time_inflow": (
-                "start_time_inflow",
-                [300, 600, 900, 1200],
-                {"units": "seconds"},
-            ),
-            "y": [0],
-            "x": [0],
-        },
-        attrs={"history": "generated for test", "crs_wkt": LOCAL_CRS_WKT},
-    )
-    relative_start = datetime.min.replace(tzinfo=UTC)
-    sim_config = SimulationConfig(
-        start_time=relative_start,
-        end_time=relative_start + timedelta(minutes=10),
-        record_step=timedelta(minutes=5),
-        temporal_type=TemporalType.RELATIVE,
-        input_map_names={"rainfall_rate": "rain", "inflow": "inflow"},
-        output_map_names={"water_depth": "depth"},
-        surface_flow_parameters=SurfaceFlowParameters(),
-    )
-    grass_params = GrassParams(
-        grassdata=str(tmp_path / "grassdb"),
-        location="project",
-        mapset="mapset",
-    )
-    monkeypatch.setattr(push, "read_all_maps", lambda *_args: dataset)
-
-    zarr_path = tmp_path / "input.zarr"
-    push.to_zarr({}, grass_params, sim_config, tempdir=zarr_path)
-
-    selected = xr.open_zarr(zarr_path)
-    assert np.issubdtype(selected.start_time_rain.dtype, np.timedelta64)
-    assert np.issubdtype(selected.start_time_inflow.dtype, np.timedelta64)
-    assert np.issubdtype(selected.end_time_rain.dtype, np.timedelta64)
-    assert np.issubdtype(selected.end_time_inflow.dtype, np.timedelta64)
-    np.testing.assert_array_equal(
-        selected.start_time_rain.values,
-        np.array([0, 300, 600], dtype="timedelta64[s]"),
-    )
-    np.testing.assert_array_equal(
-        selected.start_time_inflow.values,
-        np.array([0, 300, 600], dtype="timedelta64[s]"),
-    )
-
-
-def test_to_zarr_preserves_absolute_datetime_coordinates(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    import xarray as xr
-
-    from itzi.cloud import push
-
-    dataset = xr.Dataset(
-        data_vars={
-            "rain": (("start_time_rain", "y", "x"), [[[1]], [[2]], [[3]], [[4]]]),
-        },
-        coords={
-            "start_time_rain": np.array(
-                [
-                    "2025-01-01T12:00:00",
-                    "2025-01-01T12:05:00",
-                    "2025-01-01T12:10:00",
-                    "2025-01-01T12:15:00",
-                ],
-                dtype="datetime64[s]",
-            ),
-            "y": [0],
-            "x": [0],
-        },
-        attrs={"history": "generated for test", "crs_wkt": LOCAL_CRS_WKT},
-    )
-    sim_config = SimulationConfig(
-        start_time=datetime(2025, 1, 1, 12),
-        end_time=datetime(2025, 1, 1, 12, 10),
-        record_step=timedelta(minutes=5),
-        temporal_type=TemporalType.ABSOLUTE,
-        input_map_names={"rainfall_rate": "rain"},
-        output_map_names={"water_depth": "depth"},
-        surface_flow_parameters=SurfaceFlowParameters(),
-    )
-    grass_params = GrassParams(
-        grassdata=str(tmp_path / "grassdb"),
-        location="project",
-        mapset="mapset",
-    )
-    monkeypatch.setattr(push, "read_all_maps", lambda *_args: dataset)
-
-    zarr_path = tmp_path / "input.zarr"
-    push.to_zarr({}, grass_params, sim_config, tempdir=zarr_path)
-
-    selected = xr.open_zarr(zarr_path)
-    assert np.issubdtype(selected.start_time_rain.dtype, np.datetime64)
-    np.testing.assert_array_equal(
-        selected.start_time_rain.values,
-        np.array(
-            [
-                "2025-01-01T12:00:00",
-                "2025-01-01T12:05:00",
-                "2025-01-01T12:10:00",
-            ],
-            dtype="datetime64[s]",
-        ),
-    )
-
-
 @pytest.mark.parametrize(
     ("crs_wkt", "error_match"),
     [
         (None, "non-empty WKT"),
         ("", "non-empty WKT"),
-        ("XY location (unprojected)", "placeholder is not a valid CRS"),
+        ("XY location (unprojected)", "not valid WKT"),
         ("not WKT", "not valid WKT"),
+        (
+            LOCAL_CRS_WKT.replace('LENGTHUNIT["metre",1]', 'LENGTHUNIT["foot",0.3048]'),
+            "metre-based",
+        ),
+        (
+            LOCAL_CRS_WKT.replace('LENGTHUNIT["metre",1]', 'ANGLEUNIT["radian",1]'),
+            "metre-based",
+        ),
     ],
 )
 def test_validate_crs_rejects_invalid_values(crs_wkt: str | None, error_match: str) -> None:
     import xarray as xr
 
-    from itzi.cloud import push
+    from itzi.cloud import archive
 
     attrs = {} if crs_wkt is None else {"crs_wkt": crs_wkt}
 
     with pytest.raises(ValueError, match=error_match):
-        push.validate_crs(xr.Dataset(attrs=attrs))
+        archive.validate_crs(xr.Dataset(attrs=attrs))
 
 
 def test_validate_crs_accepts_engineering_crs() -> None:
     import xarray as xr
+    from pyproj import CRS
 
-    from itzi.cloud import push
+    from itzi.cloud import archive
 
-    push.validate_crs(xr.Dataset(attrs={"crs_wkt": LOCAL_CRS_WKT}))
+    for crs_wkt in (
+        LOCAL_CRS_WKT,
+        LOCAL_CRS_WKT.replace('LENGTHUNIT["metre",1]', 'LENGTHUNIT["custom-length",1]'),
+        CRS.from_epsg(3857).to_wkt(),
+        CRS.from_epsg(7415).to_wkt(),
+        CRS.from_string(
+            "+proj=utm +zone=10 +datum=WGS84 +towgs84=0,0,0 +units=m +type=crs"
+        ).to_wkt(),
+    ):
+        archive.validate_crs(xr.Dataset(attrs={"crs_wkt": crs_wkt}))
+
+    with pytest.raises(ValueError, match="metre-based"):
+        archive.validate_crs(xr.Dataset(attrs={"crs_wkt": CRS.from_epsg(4326).to_wkt()}))
+
+
+def test_relative_time_coordinate_without_units() -> None:
+    import xarray as xr
+
+    from itzi.cloud.archive import convert_relative_time_coordinate
+
+    with pytest.raises(ValueError, match="unsupported unit <None>"):
+        convert_relative_time_coordinate(xr.DataArray([0, 1], dims="time"))
+
+
+def test_two_member_input_archive(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    import xarray as xr
+    import zarr
+    from itzi_core import DomainData
+
+    from itzi.cloud import archive
+    from itzi.ensemble.models import (
+        ArtifactSummary,
+        EffectiveMask,
+        ResolvedSimulation,
+        SourceDocument,
+    )
+    from itzi.ensemble.schema import YamlEnsembleDocumentV1
+    from itzi.ensemble.yaml import expand_yaml_document
+
+    source = SourceDocument(tmp_path / "input.yaml", 0)
+    ensemble = expand_yaml_document(
+        source,
+        YamlEnsembleDocumentV1.model_validate(
+            {
+                "schema_version": 1,
+                "ensemble": {"id": "study"},
+                "grass": {},
+                "time": {"duration": "00:10:00", "record_step": "00:05:00"},
+                "input": {
+                    "ground_elevation": "dem",
+                    "friction": "n",
+                    "rainfall_rate": ["rain_a", "rain_b"],
+                },
+                "parameters": {},
+                "outputs": {"statistics": {"file": "stats.csv"}},
+            }
+        ),
+    )
+    grass = GrassParams(grassdata=str(tmp_path), location="project", mapset="mapset")
+    domain = DomainData(
+        north=50,
+        south=0,
+        east=50,
+        west=0,
+        rows=5,
+        cols=5,
+        crs_wkt="XY location (unprojected)",
+    )
+    simulations = tuple(
+        ResolvedSimulation(
+            simulation_id=f"sim-{i}",
+            coordinates=member.coordinates,
+            grass_params=grass,
+            domain_data=domain,
+            effective_mask=EffectiveMask("none", None),
+            input_kinds=(
+                ("ground_elevation", "raster"),
+                ("friction", "raster"),
+                ("rainfall_rate", "strds"),
+            ),
+            simulation_config=SimulationConfig(
+                start_time=datetime.min,  # noqa: DTZ901 - core relative-time sentinel.
+                end_time=datetime.min + timedelta(minutes=10),  # noqa: DTZ901
+                record_step=timedelta(minutes=5),
+                temporal_type=TemporalType.RELATIVE,
+                input_map_names={
+                    "ground_elevation": "dem@mapset",
+                    "friction": "n@mapset",
+                    "rainfall_rate": f"rain_{'ab'[i]}@mapset",
+                },
+                output_map_names={},
+                surface_flow_parameters=SurfaceFlowParameters(),
+            ),
+            artifacts=ArtifactSummary((), None, None),
+        )
+        for i, member in enumerate(ensemble.simulations)
+    )
+    monkeypatch.setattr(archive, "GrassSessionManager", lambda *_args: nullcontext())
+
+    fake_module = types.ModuleType("itzi.grass.interface")
+    fake_module.GrassInterface = lambda **_kwargs: nullcontext(
+        types.SimpleNamespace(get_npmask=lambda: np.zeros((5, 5), dtype=bool))
+    )
+    monkeypatch.setitem(sys.modules, "itzi.grass.interface", fake_module)
+
+    def read_one(path: Path, *, backend_kwargs: dict[str, list[str]]) -> xr.Dataset:
+        assert path == tmp_path / "project" / "mapset"
+        name = (backend_kwargs["raster"] or backend_kwargs["strds"])[0].split("@")[0]
+        if name.startswith("rain"):
+            steps = [0, 5, 10] if name == "rain_a" else [0, 3, 6, 9]
+            return xr.Dataset(
+                {
+                    name: (
+                        (f"start_time_{name}", "y", "x"),
+                        np.full((len(steps), 5, 5), 1 if name == "rain_a" else 2, dtype="f4"),
+                    )
+                },
+                coords={
+                    f"start_time_{name}": (f"start_time_{name}", steps, {"units": "minutes"}),
+                    "x": np.arange(5) * 10 + 5,
+                    "y": np.arange(5)[::-1] * 10 + 5,
+                },
+                attrs={"crs_wkt": LOCAL_CRS_WKT},
+            )
+        return xr.Dataset(
+            {name: (("y", "x"), np.ones((5, 5), dtype="f4"))},
+            coords={"x": np.arange(5) * 10 + 5, "y": np.arange(5)[::-1] * 10 + 5},
+            attrs={"crs_wkt": LOCAL_CRS_WKT},
+        )
+
+    limits = archive.InputLimits.model_validate(
+        dict.fromkeys(archive.InputLimits.model_fields, 1_000_000_000)
+        | {
+            "INPUT_MAX_ZSTD_WINDOW_LOG": 23,
+            "INPUT_MIN_SPATIAL_COORDINATE_SAMPLES": 5,
+        }
+    )
+    capability = archive.InputFormat(
+        limits=limits,
+        supported_versions=archive.SupportedVersions(
+            xarray=[xr.__version__],
+            zarr_python=[zarr.__version__],
+            accepted_extensions=[archive.WriterExtension(name="fixed_length_utf32", version="1")],
+        ),
+    )
+    with monkeypatch.context() as patch:
+        patch.setattr(xr, "open_dataset", read_one)
+        result = archive.build_archive(ensemble, simulations, capability, tmp_path / "input.tzst")
+    raw = result.path.read_bytes()
+    assert result.size_bytes == len(raw)
+    assert result.sha256 == hashlib.sha256(raw).hexdigest()
+    with tarfile.open(result.path, "r:zst") as tar:
+        assert {p.name.split("/")[0] for p in tar.getmembers()} == {"input.zarr"}
+        tar.extractall(tmp_path / "extracted", filter="data")
+    ds = xr.open_zarr(tmp_path / "extracted" / "input.zarr", consolidated=False)
+    assert ds.attrs["crs_wkt"] == LOCAL_CRS_WKT
+    np.testing.assert_array_equal(ds.member, [0, 1])
+    np.testing.assert_array_equal(ds.member_label, ["sim-0", "sim-1"])
+    assert ds.member_label.dtype.kind == "U"
+    assert set(ds.data_vars) == {"source_0", "source_1", "source_2", "source_3"}
+    assert ds.source_2.sizes["time_source_2"] == 3
+    assert ds.source_3.sizes["time_source_3"] == 4
+    np.testing.assert_array_equal(
+        ds.time_source_3.values, np.array([0, 180, 360, 540], dtype="timedelta64[s]")
+    )
+    assert ds.source_2.values[0, 0, 0] == 1
+    assert ds.source_3.values[0, 0, 0] == 2
+    assert ds.attrs["itzi_dimension_names"]["source_3"]["time"] == "time_source_3"
+    assert ds.x.values[0] == 5 and ds.y.values[0] == 45
+    for name in ds.variables:
+        metadata = zarr.open_array(tmp_path / "extracted" / "input.zarr" / name, mode="r")
+        assert [codec.to_dict()["name"] for codec in metadata.metadata.codecs] == ["bytes", "zstd"]
+        assert metadata.metadata.codecs[0].to_dict()["configuration"]["endian"] == "little"
+        if name in {"source_2", "source_3"}:
+            assert metadata.chunks[0] == 1
+
+    to_zarr = xr.Dataset.to_zarr
+
+    def write_with_symlink(dataset, store, **kwargs):
+        result = to_zarr(dataset, store, **kwargs)
+        (Path(store) / "link").symlink_to("zarr.json")
+        return result
+
+    monkeypatch.setattr(xr, "open_dataset", read_one)
+    with monkeypatch.context() as patch:
+        patch.setattr(xr.Dataset, "to_zarr", write_with_symlink)
+        with pytest.raises(ValueError, match="Unsupported tar entry"):
+            archive.build_archive(ensemble, simulations, capability, tmp_path / "symlink.tzst")
+    assert not (tmp_path / "symlink.tzst").exists()
+
+    with pytest.raises(ValueError, match="data variables"):
+        archive.build_archive(
+            ensemble,
+            simulations,
+            capability.model_copy(
+                update={"limits": limits.model_copy(update={"INPUT_MAX_DATA_VARIABLES": 3})}
+            ),
+            tmp_path / "invalid.tzst",
+        )
+    with pytest.raises(ValueError, match="writer"):
+        archive.build_archive(
+            ensemble,
+            simulations,
+            capability.model_copy(
+                update={
+                    "supported_versions": capability.supported_versions.model_copy(
+                        update={"xarray": ["not-deployed"]}
+                    )
+                }
+            ),
+            tmp_path / "unsupported.tzst",
+        )
+
+
+def test_yaml_stream_rejects_invalid_document_before_api(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from itzi.cloud import archive
+
+    path = tmp_path / "study.yaml"
+    path.write_text(
+        """\
+schema_version: 1
+ensemble: {id: valid}
+grass: {}
+time: {duration: '00:01:00', record_step: '00:00:30'}
+input: {ground_elevation: z, friction: n}
+parameters: {}
+outputs: {}
+---
+schema_version: 1
+ensemble: {id: invalid}
+grass: {}
+time: {duration: '00:01:00', record_step: '00:00:30'}
+input: {ground_elevation: z}
+parameters: {}
+outputs: {}
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(archive, "get_input_format", lambda _: pytest.fail("must not contact API"))
+    with pytest.raises(ValueError, match="document 1"):
+        archive.build_archives(path, "token")
+
+
+def test_failed_member_resolution_never_contacts_api(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from itzi.cloud import archive
+    from itzi.ensemble.models import ValidationFailure
+
+    path = tmp_path / "study.yaml"
+    path.write_text(
+        """\
+schema_version: 1
+ensemble: {id: invalid}
+grass: {}
+time: {duration: '00:01:00', record_step: '00:00:30'}
+input: {ground_elevation: z, friction: n}
+parameters: {cfl: [0.2, 0.3]}
+outputs: {}
+""",
+        encoding="utf-8",
+    )
+
+    failure = ValidationFailure((), "input_resolution", "missing z")
+    monkeypatch.setattr(
+        archive,
+        "ProcessPoolExecutor",
+        lambda **_kwargs: nullcontext(
+            types.SimpleNamespace(
+                submit=lambda *_: types.SimpleNamespace(result=lambda: (failure,))
+            )
+        ),
+    )
+    monkeypatch.setattr(archive, "get_input_format", lambda _: pytest.fail("must not contact API"))
+    with pytest.raises(ValueError, match="missing z"):
+        archive.build_archives(path, "token")
+
+
+def test_input_format_uses_authenticated_execution_api(monkeypatch: pytest.MonkeyPatch) -> None:
+    from itzi.cloud import archive
+
+    calls = []
+    monkeypatch.delenv("ITZI_CLOUD_API_BASE", raising=False)
+
+    class Response:
+        def raise_for_status(self) -> None:
+            pass
+
+        def json(self) -> dict:
+            return {
+                "limits": {name: 1000 for name in archive.InputLimits.model_fields},
+                "supported_versions": {
+                    "xarray": ["2026.7.0"],
+                    "zarr_python": ["3.2.1"],
+                    "accepted_extensions": [{"name": "fixed_length_utf32", "version": "1"}],
+                },
+            }
+
+    monkeypatch.setattr(
+        archive.requests, "get", lambda url, **kwargs: calls.append((url, kwargs)) or Response()
+    )
+    capability = archive.get_input_format("session-token")
+    assert capability.limits.INPUT_MAX_MEMBERS == 1000
+    assert calls == [
+        (
+            "http://localhost:8000/execution-api/v1/input-formats/precipient-itzi-input-v1",
+            {"headers": {"X-Session-Token": "session-token"}, "timeout": 30},
+        )
+    ]

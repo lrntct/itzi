@@ -97,7 +97,7 @@ def _legacy_ensemble(path: Path) -> ExpandedEnsemble:
         key: input_names[key] for key in ("infiltration", *GREEN_AMPT_KEYS) if key in input_names
     }
     direct_inputs = {key: input_names[key] for key in DIRECT_INPUT_KEYS if key in input_names}
-    options = {
+    parameters = {
         **config.surface_flow_parameters.model_dump(),
         "dtinf": config.dtinf,
     }
@@ -131,7 +131,7 @@ def _legacy_ensemble(path: Path) -> ExpandedEnsemble:
         infiltration=NormalizedInfiltration(
             config.infiltration_model, tuple(sorted(infiltration_maps.items()))
         ),
-        options=tuple(sorted(options.items())),
+        parameters=tuple(sorted(parameters.items())),
         drainage=tuple(sorted(drainage.items())) if drainage is not None else None,
         outputs=OutputTemplates(
             raster_prefix=reader.out_prefix,
