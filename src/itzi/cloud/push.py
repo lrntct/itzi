@@ -16,14 +16,16 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import time
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Literal
 
 import requests
+from itzi_core import TemporalType
 
 from itzi.cloud import urls
-from itzi.cloud.archive import BuiltArchive
+from itzi.cloud.archive import BuiltArchive, source_names
 from itzi.cloud.metadata_storage import (
     EnsembleDraft,
     get_or_create_ensemble_draft,
@@ -34,23 +36,30 @@ from itzi.cloud.schemas import (
     InputConfirmationSchema,
     InputUploadInstructionSchema,
     InputUploadStatusSchema,
+    RunResponseSchema,
+    SimulationResponseSchema,
 )
+
+VALIDATION_WAIT_SECONDS = 60
+VALIDATION_POLL_SECONDS = 2
 
 
 def create_ensemble(
-    archive: BuiltArchive, *, project_id: str, email: str, session_token: str
+    archive: BuiltArchive, *, project_id: str, email: str, session_token: str, force: bool = False
 ) -> EnsembleDraft:
     """Create once, replay an interrupted request, or resume its recorded IDs."""
     source = archive.ensemble.source
+    if source.yaml_sha256 is None:
+        raise ValueError("Cloud push requires a parsed YAML document")
     grass = archive.simulations[0].grass_params
     draft = get_or_create_ensemble_draft(
         email,
         project_id,
-        source.path,
-        source.document_index,
         tuple(sim.simulation_id for sim in archive.simulations),
         replace(grass, region=None, mask=None),
         archive.sha256,
+        source.yaml_sha256,
+        force=force,
     )
     if draft.ensemble_id is not None and draft.input_id is not None:
         return draft
@@ -202,3 +211,147 @@ def upload_input(archive: BuiltArchive, draft: EnsembleDraft, session_token: str
     if confirmation.input_id != draft.input_id:
         raise ValueError("Upload confirmation refers to another Input")
     return _record_upload(draft, "confirmed", transfer_id, confirmation.state)
+
+
+def wait_for_input(draft: EnsembleDraft, session_token: str) -> EnsembleDraft:
+    """Wait briefly for acceptance before creating Simulations."""
+    if draft.input_id is None or draft.upload_stage != "confirmed":
+        raise ValueError("Confirm the Input before checking validation")
+    input_url = urls.get_input_endpoint(draft.input_id)
+    deadline = time.monotonic() + VALIDATION_WAIT_SECONDS
+    while True:
+        response = requests.get(
+            input_url,
+            headers={"X-Session-Token": session_token},
+            timeout=30,
+        )
+        response.raise_for_status()
+        status = InputUploadStatusSchema.model_validate(response.json())
+        if status.input_id != draft.input_id:
+            raise ValueError("Input status refers to another Input")
+        if status.state in ("accepted", "failed") and (
+            status.upload_confirmation is None
+            or status.upload_confirmation.sha256 != draft.archive_sha256
+        ):
+            raise ValueError(f"Input {draft.input_id} was confirmed with a different archive")
+        if status.state == "failed":
+            failure = status.failure
+            detail = (
+                f"{failure.message}; next action: {failure.next_action}"
+                if failure is not None
+                else "inspect the Input failure with cloud status"
+            )
+            raise ValueError(
+                f"Input {draft.input_id} rejected: {detail}. "
+                "A rejected initial upload needs a new Ensemble (change the YAML, or change "
+                "the archive and use --force)."
+            )
+        if status.state == "accepted":
+            if status.members is None:
+                raise ValueError(f"Accepted Input {draft.input_id} has no member mapping")
+            actual = [(member.index, member.label) for member in status.members]
+            expected = list(enumerate(draft.member_labels))
+            if actual != expected:
+                raise ValueError(f"Input {draft.input_id} member mapping differs from local order")
+            return draft
+        if time.monotonic() >= deadline:
+            raise TimeoutError(
+                f"Input {draft.input_id} is {status.state}; validation still pending. "
+                "Retry cloud push to resume."
+            )
+        time.sleep(min(VALIDATION_POLL_SECONDS, max(0, deadline - time.monotonic())))
+
+
+def _output_configuration(archive: BuiltArchive) -> dict[str, str | int | list[str] | None]:
+    member = archive.ensemble.simulations[0]
+    codes = list(member.outputs.raster_variables) or ["water_depth"]
+    span = member.time.duration
+    start = member.time.source_start or member.time.start
+    absolute_start = None
+    if member.time.temporal_type == TemporalType.ABSOLUTE:
+        if start is None:
+            raise ValueError("Absolute YAML time requires a start timestamp")
+        absolute_start = (start if start.tzinfo else start.astimezone()).isoformat()
+
+    return {
+        "selected_output_codes": codes,
+        "temporal_type": str(member.time.temporal_type),
+        "absolute_start_time": absolute_start,
+        "start_offset_us": 0,
+        "end_offset_us": span // timedelta(microseconds=1),
+        "report_interval_us": member.time.record_step // timedelta(microseconds=1),
+    }
+
+
+def launch_runs(archive: BuiltArchive, draft: EnsembleDraft, session_token: str) -> EnsembleDraft:
+    """PUT immutable member configurations and request one idempotent Run per member."""
+    if draft.input_id is None or draft.ensemble_id is None:
+        raise ValueError("Create the Ensemble before creating Simulations")
+    input_url = urls.get_input_endpoint(draft.input_id)
+    output = _output_configuration(archive)
+    sources = source_names(archive.simulations)
+    headers = {"X-Session-Token": session_token}
+    errors: list[str] = []
+    for index, simulation in enumerate(archive.simulations):
+        try:
+            simulation_id = draft.simulation_ids.get(index)
+            if simulation_id is None:
+                config = simulation.simulation_config
+                kinds = dict(simulation.input_kinds)
+                response = requests.put(
+                    f"{input_url}/simulations/{index}",
+                    headers=headers,
+                    json={
+                        "output_configuration": output,
+                        "configuration": {
+                            "input_map_names": {
+                                role: sources[(name, kinds[role])]
+                                for role, name in config.input_map_names.items()
+                            },
+                            "surface_flow_parameters": config.surface_flow_parameters.model_dump(),
+                            "dtinf": config.dtinf,
+                            "infiltration_model": str(config.infiltration_model),
+                        },
+                    },
+                    timeout=30,
+                )
+                response.raise_for_status()
+                created = SimulationResponseSchema.model_validate(response.json())
+                if (
+                    created.input_id != draft.input_id
+                    or created.ensemble_id != draft.ensemble_id
+                    or created.member_index != index
+                    or created.member_label != draft.member_labels[index]
+                ):
+                    raise ValueError("Simulation response does not match the accepted member")
+                simulation_id = created.simulation_id
+                draft = draft.model_copy(
+                    update={"simulation_ids": draft.simulation_ids | {index: simulation_id}}
+                )
+                save_ensemble_draft(draft)
+            if index not in draft.run_ids:
+                response = requests.post(
+                    urls.get_runs_endpoint(simulation_id),
+                    headers={
+                        **headers,
+                        "Idempotency-Key": hashlib.sha256(
+                            f"{draft.idempotency_key}/run/{index}".encode()
+                        ).hexdigest(),
+                    },
+                    timeout=30,
+                )
+                response.raise_for_status()
+                run = RunResponseSchema.model_validate(response.json())
+                if run.simulation_id != simulation_id:
+                    raise ValueError("Run response refers to another Simulation")
+                draft = draft.model_copy(update={"run_ids": draft.run_ids | {index: run.run_id}})
+                save_ensemble_draft(draft)
+        except (requests.RequestException, ValueError, KeyError) as error:
+            errors.append(f"member {index} ({draft.member_labels[index]}): {error}")
+    if errors:
+        raise ValueError(
+            f"Ensemble {draft.ensemble_id} launched"
+            f"{len(draft.run_ids)}/{len(archive.simulations)} members; "
+            f"{'; '.join(errors)}. Retry cloud push to resume."
+        )
+    return draft

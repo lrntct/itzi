@@ -9,7 +9,7 @@ import io
 import json
 import tarfile
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -79,6 +79,14 @@ class FakeCloudState:
         self.confirm_error = False
         self.lose_confirm_response = False
         self.instruction_conflict = False
+        self.member_labels: dict[str, list[str]] = {}
+        self.validation_state: str | None = None
+        self.simulation_puts: list[tuple[str, int, dict[str, Any], str]] = []
+        self.run_requests: list[tuple[str, str, str]] = []
+        self.fail_simulation: int | None = None
+        self.fail_run: int | None = None
+        self.lose_simulation_response = False
+        self.lose_run_response = False
 
 
 class FakeCloudServer(ThreadingHTTPServer):
@@ -97,6 +105,28 @@ class FakeCloudRequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = urlparse(self.path).path
+        if path.startswith("/execution-api/v1/simulations/") and path.endswith("/runs"):
+            if not self._require_token():
+                return
+            simulation_id = path.removeprefix("/execution-api/v1/simulations/").removesuffix(
+                "/runs"
+            )
+            key = self.headers.get("Idempotency-Key", "")
+            self.server.state.run_requests.append(
+                (simulation_id, key, self.headers.get("X-Session-Token", ""))
+            )
+            if self.server.state.fail_run is not None and simulation_id.endswith(
+                f"-{self.server.state.fail_run}"
+            ):
+                self._send_json(503, {"detail": "Run unavailable"})
+                return
+            run_id = f"run-{simulation_id}"
+            if self.server.state.lose_run_response:
+                self.server.state.lose_run_response = False
+                self._send_json(503, {"detail": "Run response lost"})
+                return
+            self._send_json(200, {"simulation_id": simulation_id, "run_id": run_id})
+            return
         if path.startswith("/execution-api/v1/inputs/"):
             if not self._require_token():
                 return
@@ -224,10 +254,31 @@ class FakeCloudRequestHandler(BaseHTTPRequestHandler):
                 200,
                 {
                     "input_id": input_id,
-                    "state": "validating" if confirmed else "draft",
+                    "state": (self.server.state.validation_state or "accepted")
+                    if confirmed
+                    else "draft",
                     "upload_confirmation": (
                         {"size_bytes": confirmed["size_bytes"], "sha256": confirmed["sha256"]}
                         if confirmed
+                        else None
+                    ),
+                    "failure": (
+                        {"message": "Archive rejected", "next_action": "fix the archive"}
+                        if confirmed and self.server.state.validation_state == "failed"
+                        else None
+                    ),
+                    "acceptance": (
+                        {
+                            "member_mapping": {
+                                "members": [
+                                    {"index": index, "label": label}
+                                    for index, label in enumerate(
+                                        self.server.state.member_labels.get(input_id, ["member-0"])
+                                    )
+                                ]
+                            }
+                        }
+                        if confirmed and self.server.state.validation_state in (None, "accepted")
                         else None
                     ),
                 },
@@ -296,6 +347,38 @@ class FakeCloudRequestHandler(BaseHTTPRequestHandler):
 
     def do_PUT(self) -> None:
         path = urlparse(self.path).path
+        if path.startswith("/execution-api/v1/inputs/") and "/simulations/" in path:
+            if not self._require_token():
+                return
+            input_id, index_text = path.removeprefix("/execution-api/v1/inputs/").split(
+                "/simulations/"
+            )
+            index = int(index_text)
+            payload = self._read_json()
+            self.server.state.simulation_puts.append(
+                (input_id, index, payload, self.headers.get("X-Session-Token", ""))
+            )
+            if self.server.state.fail_simulation == index:
+                self._send_json(503, {"detail": "Simulation unavailable"})
+                return
+            simulation_id = f"simulation-{input_id}-{index}"
+            if self.server.state.lose_simulation_response:
+                self.server.state.lose_simulation_response = False
+                self._send_json(503, {"detail": "Simulation response lost"})
+                return
+            self._send_json(
+                201,
+                {
+                    "simulation_id": simulation_id,
+                    "input_id": input_id,
+                    "ensemble_id": input_id.replace("input-", "ensemble-"),
+                    "member_index": index,
+                    "member_label": self.server.state.member_labels.get(input_id, ["member-0"])[
+                        index
+                    ],
+                },
+            )
+            return
         if path.startswith("/uploads/"):
             transfer_id = path.removeprefix("/uploads/")
             body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
@@ -580,10 +663,64 @@ def test_cloud_status_requires_an_active_session(
         itzi_cloud_status(argparse.Namespace(fingerprint=None))
 
 
-def _fake_archive(path: Path, config: Path, grass_params: GrassParams) -> SimpleNamespace:
+def _fake_archive(
+    path: Path,
+    config: Path,
+    grass_params: GrassParams,
+    *,
+    document_index: int = 0,
+    members: int = 1,
+    time: dict[str, str] | None = None,
+    outputs: dict[str, Any] | None = None,
+    yaml_sha256: str | None = None,
+) -> SimpleNamespace:
+    from itzi_core import SurfaceFlowParameters
+
+    from itzi.ensemble.models import SourceDocument
+    from itzi.ensemble.schema import YamlEnsembleDocumentV1
+    from itzi.ensemble.yaml import expand_yaml_document
+
+    ensemble = expand_yaml_document(
+        SourceDocument(
+            config,
+            document_index,
+            yaml_sha256 or hashlib.sha256(f"study-{document_index}".encode()).hexdigest(),
+        ),
+        YamlEnsembleDocumentV1.model_validate(
+            {
+                "schema_version": 1,
+                "ensemble": {"id": f"study-{document_index}"},
+                "grass": {},
+                "time": time or {"duration": "00:10:00", "record_step": "00:05:00"},
+                "input": {"ground_elevation": "dem", "friction": "n"},
+                "parameters": {},
+                "outputs": outputs or {},
+            }
+        ),
+    )
+    expanded = ensemble.simulations[0]
     return SimpleNamespace(
-        ensemble=SimpleNamespace(source=SimpleNamespace(path=config, document_index=0)),
-        simulations=(SimpleNamespace(simulation_id="member-0", grass_params=grass_params),),
+        ensemble=SimpleNamespace(
+            source=ensemble.source,
+            simulations=(expanded,) * members,
+        ),
+        simulations=tuple(
+            SimpleNamespace(
+                simulation_id=f"member-{document_index}-{index}" if members > 1 else "member-0",
+                grass_params=grass_params,
+                input_kinds=(("ground_elevation", "raster"), ("friction", "raster")),
+                simulation_config=SimpleNamespace(
+                    input_map_names={
+                        "ground_elevation": f"dem_{index}@mapset",
+                        "friction": "n@mapset",
+                    },
+                    surface_flow_parameters=SurfaceFlowParameters(),
+                    dtinf=1.0,
+                    infiltration_model="null",
+                ),
+            )
+            for index in range(members)
+        ),
         path=path,
         size_bytes=path.stat().st_size,
         sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
@@ -605,20 +742,20 @@ def test_cloud_push_creates_and_resumes_each_document(
     for index, payload in enumerate(payloads):
         (tmp_path / f"input-{index}.tzst").write_bytes(payload)
     archives = tuple(
-        SimpleNamespace(
-            ensemble=SimpleNamespace(source=SimpleNamespace(path=config, document_index=index)),
-            simulations=tuple(
-                SimpleNamespace(
-                    simulation_id=f"member-{index}-{member}", grass_params=ctx.grass_params
-                )
-                for member in range(2)
-            ),
-            path=tmp_path / f"input-{index}.tzst",
-            size_bytes=len(payloads[index]),
-            sha256=hashlib.sha256(payloads[index]).hexdigest(),
+        _fake_archive(
+            tmp_path / f"input-{index}.tzst",
+            config,
+            ctx.grass_params,
+            document_index=index,
+            members=2,
         )
         for index in range(2)
     )
+    for index in range(2):
+        fake_cloud_server.state.member_labels[f"input-{index + 1}"] = [
+            f"member-{index}-0",
+            f"member-{index}-1",
+        ]
     monkeypatch.setattr(archive, "build_archives", lambda path, token: archives)
     args = argparse.Namespace(project="proj-public", config_file=[str(config)])
     itzi_cloud_push(args)
@@ -632,8 +769,6 @@ def test_cloud_push_creates_and_resumes_each_document(
     ]
     for index, draft in enumerate(drafts):
         assert draft["project_id"] == "proj-public"
-        assert draft["config_file"] == str(config.resolve())
-        assert draft["document_index"] == index
         assert draft["member_labels"] == [f"member-{index}-0", f"member-{index}-1"]
         assert draft["grass_params"]["grassdata"] == str(ctx.grass_params.grassdata)
         assert draft["grass_params"]["location"] == "project"
@@ -644,6 +779,10 @@ def test_cloud_push_creates_and_resumes_each_document(
     assert [call[1] for call in fake_cloud_server.state.ensemble_creates] == [
         draft["idempotency_key"] for draft in drafts
     ]
+    keys = [draft["idempotency_key"] for draft in drafts] + [
+        key for _, key, _ in fake_cloud_server.state.run_requests
+    ]
+    assert len(keys) == len(set(keys))
     assert all(
         call[2] == "token-1" and call[3] == b""
         for call in fake_cloud_server.state.ensemble_creates
@@ -666,6 +805,13 @@ def test_cloud_push_creates_and_resumes_each_document(
     ]
     assert all(draft["upload_stage"] == "confirmed" for draft in drafts)
     assert all(draft["confirmation_state"] == "validating" for draft in drafts)
+    assert [draft["run_ids"] for draft in drafts] == [
+        {str(i): f"run-simulation-input-{index + 1}-{i}" for i in range(2)} for index in range(2)
+    ]
+    assert all(
+        payload["output_configuration"]["selected_output_codes"] == ["water_depth"]
+        for _, _, payload, _ in fake_cloud_server.state.simulation_puts
+    )
     assert all(
         token == "token-1"
         for _, _, token in (
@@ -683,10 +829,73 @@ def test_cloud_push_creates_and_resumes_each_document(
         == stored["ensembles"]
     )
 
+    source = archives[0].ensemble.source
+    archives[0].ensemble.source = replace(source, path=tmp_path / "moved.yaml", document_index=7)
+    monkeypatch.setattr(archive, "build_archives", lambda path, token: (archives[0],))
+    itzi_cloud_push(
+        argparse.Namespace(project="proj-public", config_file=[str(tmp_path / "moved.yaml")])
+    )
+    assert len(fake_cloud_server.state.ensemble_creates) == 2
+    assert (
+        json.loads(ctx.metadata_storage.get_metadata_file_path().read_text())["ensembles"]
+        == stored["ensembles"]
+    )
+
+    archives[0].ensemble.source = source
+    monkeypatch.setattr(archive, "build_archives", lambda path, token: archives)
     archives[0].sha256 = "0" * 64
-    with pytest.raises(FatalError, match="changed since cloud creation"):
+    with pytest.raises(FatalError, match="use --force"):
         itzi_cloud_push(args)
     assert len(fake_cloud_server.state.ensemble_creates) == 2
+
+
+@pytest.mark.cloud
+def test_cloud_push_distinguishes_yaml_and_forced_archive_changes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, fake_cloud_server: FakeCloudServer
+) -> None:
+    from itzi.cloud import archive
+
+    ctx = _configure_cloud_test_environment(monkeypatch, tmp_path, fake_cloud_server)
+    itzi_cloud_login(
+        argparse.Namespace(email="user@example.com", password="secret", logout=False, status=False)
+    )
+    config = tmp_path / "study.yaml"
+    path = tmp_path / "input.tzst"
+    path.write_bytes(b"first Input")
+    built = _fake_archive(path, config, ctx.grass_params)
+    monkeypatch.setattr(archive, "build_archives", lambda *_: (built,))
+    args = argparse.Namespace(project="proj-public", config_file=[str(config)], force=False)
+    forced = argparse.Namespace(project="proj-public", config_file=[str(config)], force=True)
+
+    itzi_cloud_push(args)
+    path.write_bytes(b"updated Input")
+    built = _fake_archive(path, config, ctx.grass_params)
+    with pytest.raises(FatalError, match="use --force"):
+        itzi_cloud_push(args)
+    assert len(fake_cloud_server.state.ensemble_creates) == 1
+
+    fake_cloud_server.state.lose_create_response = True
+    with pytest.raises(FatalError, match="503"):
+        itzi_cloud_push(forced)
+    pending = list(
+        json.loads(ctx.metadata_storage.get_metadata_file_path().read_text())["ensembles"].values()
+    )[-1]
+    assert pending["ensemble_id"] is None
+    itzi_cloud_push(forced)
+    itzi_cloud_push(forced)
+    itzi_cloud_push(args)
+    assert len(fake_cloud_server.state.ensemble_creates) == 3
+    assert fake_cloud_server.state.ensemble_creates[1][1] == pending["idempotency_key"]
+    assert fake_cloud_server.state.ensemble_creates[2][1] == pending["idempotency_key"]
+    assert len(fake_cloud_server.state.ensembles_by_key) == 2
+    assert len(fake_cloud_server.state.uploads) == 2
+
+    built = _fake_archive(path, config, ctx.grass_params, yaml_sha256="changed YAML document")
+    itzi_cloud_push(args)
+    assert len(fake_cloud_server.state.ensemble_creates) == 4
+    drafts = json.loads(ctx.metadata_storage.get_metadata_file_path().read_text())["ensembles"]
+    assert len(drafts) == 3
+    assert len({draft["idempotency_key"] for draft in drafts.values()}) == 3
 
 
 @pytest.mark.cloud
@@ -832,3 +1041,172 @@ def test_cloud_upload_refuses_unpermitted_refresh_and_wrong_digest(
     with pytest.raises(FatalError, match="409"):
         itzi_cloud_push(args)
     assert len(fake_cloud_server.state.uploads) == 0
+
+
+@pytest.mark.cloud
+@pytest.mark.parametrize("validation_state", ["validating", "failed", "accepted"])
+def test_cloud_push_waits_for_accepted_member_mapping(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    fake_cloud_server: FakeCloudServer,
+    validation_state: str,
+) -> None:
+    from itzi.cloud import archive, push
+
+    ctx = _configure_cloud_test_environment(monkeypatch, tmp_path, fake_cloud_server)
+    itzi_cloud_login(
+        argparse.Namespace(email="user@example.com", password="secret", logout=False, status=False)
+    )
+    path = tmp_path / "input.tzst"
+    path.write_bytes(b"input")
+    built = _fake_archive(path, tmp_path / "study.yaml", ctx.grass_params)
+    monkeypatch.setattr(archive, "build_archives", lambda *_: (built,))
+    monkeypatch.setattr(push, "VALIDATION_WAIT_SECONDS", 0)
+    state = fake_cloud_server.state
+    state.validation_state = validation_state
+    if validation_state == "accepted":
+        state.member_labels["input-1"] = ["wrong-label"]
+    with pytest.raises(
+        FatalError,
+        match={
+            "validating": "validation still pending.*Retry cloud push",
+            "failed": "Archive rejected; next action: fix the archive.*new Ensemble",
+            "accepted": "member mapping differs from local order",
+        }[validation_state],
+    ):
+        itzi_cloud_push(
+            argparse.Namespace(
+                project="proj-public", config_file=[str(built.ensemble.source.path)]
+            )
+        )
+    assert not state.simulation_puts and not state.run_requests
+    state.validation_state = "accepted"
+    state.member_labels["input-1"] = ["member-0"]
+    itzi_cloud_push(
+        argparse.Namespace(project="proj-public", config_file=[str(built.ensemble.source.path)])
+    )
+    assert len(state.uploads) == len(state.confirm_requests) == len(state.ensemble_creates) == 1
+    assert len(state.simulation_puts) == len(state.run_requests) == 1
+
+
+@pytest.mark.cloud
+@pytest.mark.parametrize(
+    "failure", ["fail_simulation", "lose_simulation_response", "fail_run", "lose_run_response"]
+)
+def test_cloud_push_resumes_failed_member_and_replays_run_key(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    fake_cloud_server: FakeCloudServer,
+    failure: str,
+) -> None:
+    from itzi.cloud import archive
+
+    ctx = _configure_cloud_test_environment(monkeypatch, tmp_path, fake_cloud_server)
+    itzi_cloud_login(
+        argparse.Namespace(email="user@example.com", password="secret", logout=False, status=False)
+    )
+    path = tmp_path / "input.tzst"
+    path.write_bytes(b"input")
+    built = _fake_archive(path, tmp_path / "study.yaml", ctx.grass_params, members=2)
+    monkeypatch.setattr(archive, "build_archives", lambda *_: (built,))
+    state = fake_cloud_server.state
+    state.member_labels["input-1"] = ["member-0-0", "member-0-1"]
+    setattr(state, failure, 0 if failure.startswith("fail_") else True)
+    args = argparse.Namespace(project="proj-public", config_file=[str(built.ensemble.source.path)])
+    with pytest.raises(FatalError, match="member 0.*Retry cloud push"):
+        itzi_cloud_push(args)
+    metadata_path = ctx.metadata_storage.get_metadata_file_path()
+    draft = next(iter(json.loads(metadata_path.read_text())["ensembles"].values()))
+    assert draft["run_ids"] == {"1": "run-simulation-input-1-1"}
+    assert len(state.ensemble_creates) == len(state.uploads) == 1
+
+    setattr(state, failure, None if failure.startswith("fail_") else False)
+    itzi_cloud_push(args)
+    draft = next(iter(json.loads(metadata_path.read_text())["ensembles"].values()))
+    assert set(draft["simulation_ids"]) == set(draft["run_ids"]) == {"0", "1"}
+    assert len(state.ensemble_creates) == len(state.uploads) == len(state.confirm_requests) == 1
+    assert [index for _, index, _, _ in state.simulation_puts].count(1) == 1
+    assert [sim for sim, _, _ in state.run_requests].count("simulation-input-1-1") == 1
+    if failure in ("fail_run", "lose_run_response"):
+        assert [key for sim, key, _ in state.run_requests if sim == "simulation-input-1-0"] == [
+            state.run_requests[0][1]
+        ] * 2
+    previous = (len(state.simulation_puts), len(state.run_requests))
+    itzi_cloud_push(args)
+    assert (len(state.simulation_puts), len(state.run_requests)) == previous
+
+
+@pytest.mark.cloud
+@pytest.mark.parametrize(
+    ("time", "absolute_start"),
+    [
+        ({"duration": "00:10:00", "record_step": "00:05:00"}, None),
+        (
+            {
+                "start": "2026-09-30T12:00:00+05:30",
+                "duration": "00:10:00",
+                "record_step": "00:05:00",
+            },
+            "2026-09-30T12:00:00+05:30",
+        ),
+        (
+            {"start": "2026-09-30T12:00:00", "duration": "00:10:00", "record_step": "00:05:00"},
+            datetime(2026, 9, 30, 12).astimezone().isoformat(),
+        ),
+    ],
+)
+def test_cloud_output_time_and_member_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    fake_cloud_server: FakeCloudServer,
+    time: dict[str, str],
+    absolute_start: str | None,
+) -> None:
+    from itzi.cloud import archive
+
+    ctx = _configure_cloud_test_environment(monkeypatch, tmp_path, fake_cloud_server)
+    itzi_cloud_login(
+        argparse.Namespace(email="user@example.com", password="secret", logout=False, status=False)
+    )
+    path = tmp_path / "input.tzst"
+    path.write_bytes(b"input")
+    built = _fake_archive(
+        path,
+        tmp_path / "study.yaml",
+        ctx.grass_params,
+        members=2,
+        time=time,
+        outputs={"rasters": {"prefix": "cloud", "variables": ["water_depth", "flow_speed"]}},
+    )
+    monkeypatch.setattr(archive, "build_archives", lambda *_: (built,))
+    fake_cloud_server.state.member_labels["input-1"] = ["member-0-0", "member-0-1"]
+    itzi_cloud_push(
+        argparse.Namespace(project="proj-public", config_file=[str(built.ensemble.source.path)])
+    )
+    puts = fake_cloud_server.state.simulation_puts
+    assert [item[2]["configuration"]["input_map_names"] for item in puts] == [
+        {"ground_elevation": "source_0", "friction": "source_1"},
+        {"ground_elevation": "source_2", "friction": "source_1"},
+    ]
+    for _, _, payload, token in puts:
+        assert token == "token-1"
+        assert payload["output_configuration"] == {
+            "selected_output_codes": ["water_depth", "flow_speed"],
+            "temporal_type": "absolute" if absolute_start else "relative",
+            "absolute_start_time": absolute_start,
+            "start_offset_us": 0,
+            "end_offset_us": 600_000_000,
+            "report_interval_us": 300_000_000,
+        }
+        config = payload["configuration"]
+        assert set(config["surface_flow_parameters"]) == {
+            "hmin",
+            "cfl",
+            "theta",
+            "g",
+            "dtmax",
+            "slope_threshold",
+            "max_slope",
+            "max_error",
+        }
+        assert config["dtinf"] > 0 and config["infiltration_model"] == "null"

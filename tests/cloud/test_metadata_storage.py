@@ -20,12 +20,11 @@ def test_save_simulation_does_not_replace_corrupted_metadata(
         metadata_storage.EnsembleDraft(
             email="user@example.com",
             project_id="project",
-            config_file="study.yaml",
-            document_index=0,
             member_labels=("member",),
             grass_params=GrassParams(),
             archive_sha256="hash",
             idempotency_key="draft-key",
+            yaml_sha256="yaml-hash",
         )
     )
     path = metadata_storage.get_metadata_file_path()

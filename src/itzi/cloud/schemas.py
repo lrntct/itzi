@@ -12,10 +12,12 @@ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 GNU General Public License for more details.
 """
 
+from __future__ import annotations
+
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import AliasPath, BaseModel, Field
 
 
 class SimulationTaskSchema(BaseModel):
@@ -86,3 +88,30 @@ class InputUploadStatusSchema(BaseModel):
     input_id: str
     state: str
     upload_confirmation: UploadConfirmationSchema | None
+    failure: InputFailureSchema | None = None
+    members: list[AcceptedMemberSchema] | None = Field(
+        default=None, validation_alias=AliasPath("acceptance", "member_mapping", "members")
+    )
+
+
+class InputFailureSchema(BaseModel):
+    message: str
+    next_action: str
+
+
+class AcceptedMemberSchema(BaseModel):
+    index: int
+    label: str
+
+
+class SimulationResponseSchema(BaseModel):
+    simulation_id: str = Field(min_length=1)
+    input_id: str
+    ensemble_id: str
+    member_index: int
+    member_label: str
+
+
+class RunResponseSchema(BaseModel):
+    run_id: str = Field(min_length=1)
+    simulation_id: str

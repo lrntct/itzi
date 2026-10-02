@@ -62,6 +62,7 @@ class SourceDocument:
 
     path: Path
     document_index: int
+    yaml_sha256: str | None = None
 
 
 @dataclass(frozen=True)
@@ -114,6 +115,7 @@ class NormalizedTime:
     duration: timedelta
     record_step: timedelta
     had_timezone_offset: bool
+    source_start: datetime | None = None
 
 
 @dataclass(frozen=True)

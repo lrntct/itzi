@@ -52,7 +52,7 @@ def itzi_cloud_login(cli_args) -> None:
 
 
 def itzi_cloud_push(cli_args: argparse.Namespace) -> None:
-    """Build cloud Input archives, create Ensembles, and queue Input validation."""
+    """Build Input archives and request one cloud Run per accepted member."""
     os.environ["ITZI_VERBOSE"] = str(VerbosityLevel.MESSAGE)
 
     from itzi.cloud.auth import check_login, get_token
@@ -60,20 +60,27 @@ def itzi_cloud_push(cli_args: argparse.Namespace) -> None:
     email = check_login()
     session_token = get_token(email)
     from itzi.cloud.archive import build_archives
-    from itzi.cloud.push import create_ensemble, upload_input
+    from itzi.cloud.push import create_ensemble, launch_runs, upload_input, wait_for_input
 
     for conf_file in cli_args.config_file:
         try:
             for archive in build_archives(conf_file, session_token):
                 draft = create_ensemble(
-                    archive, project_id=cli_args.project, email=email, session_token=session_token
+                    archive,
+                    project_id=cli_args.project,
+                    email=email,
+                    session_token=session_token,
+                    force=getattr(cli_args, "force", False),
                 )
                 draft = upload_input(archive, draft, session_token)
+                draft = wait_for_input(draft, session_token)
+                draft = launch_runs(archive, draft, session_token)
+                runs = (f"{index}={run}" for index, run in sorted(draft.run_ids.items()))
                 source = archive.ensemble.source
                 msgr.message(
                     f"{source.path} document {source.document_index}: "
-                    f"Ensemble {draft.ensemble_id}, Input {draft.input_id} confirmed; "
-                    f"validation queued ({archive.size_bytes} bytes, SHA-256 {archive.sha256})"
+                    f"Ensemble {draft.ensemble_id}, Input {draft.input_id} accepted; "
+                    f"runs: {', '.join(runs)}"
                 )
         except Exception as error:  # noqa: BLE001 - surface resolver, reader and HTTP errors.
             msgr.fatal(f"{conf_file}: cloud push failed: {error}")

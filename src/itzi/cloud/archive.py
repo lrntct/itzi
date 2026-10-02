@@ -228,10 +228,23 @@ def _check_limit(value: int, maximum: int, description: str) -> None:
 
 
 def _warn_omissions(ensemble: ExpandedEnsemble) -> None:
+    """No warning for the absence of CSV on purpose."""
     if any(member.drainage is not None for member in ensemble.simulations):
         msgr.warning(f"{ensemble.ensemble_id}: SWMM coupling/drainage will not run in the cloud")
     if ensemble.simulations[0].outputs.drainage_dataset:
         msgr.warning(f"{ensemble.ensemble_id}: drainage output will not run in the cloud")
+    if not ensemble.simulations[0].outputs.raster_variables:
+        msgr.warning(f"{ensemble.ensemble_id}: requesting water_depth as the cloud default output")
+
+
+def source_names(simulations: tuple[ResolvedSimulation, ...]) -> dict[tuple[str, str], str]:
+    """Assign archive variable names in the same order used by the Zarr writer."""
+    sources: dict[tuple[str, str], str] = {}
+    for sim in simulations:
+        kinds = dict(sim.input_kinds)
+        for role, identifier in sim.simulation_config.input_map_names.items():
+            sources.setdefault((identifier, kinds[role]), f"source_{len(sources)}")
+    return sources
 
 
 def _dataset(
@@ -256,13 +269,7 @@ def _dataset(
         raise ValueError("GRASS region has too few spatial coordinate samples")
     _check_limit(domain.cols * domain.rows, limits.INPUT_MAX_2D_DOMAIN_CELLS, "domain cells")
 
-    sources: dict[tuple[str, str], str] = {}
-    for sim in simulations:
-        kinds = dict(sim.input_kinds)
-        for role, identifier in sim.simulation_config.input_map_names.items():
-            key = (identifier, kinds[role])
-            if key not in sources:
-                sources[key] = f"source_{len(sources)}"
+    sources = source_names(simulations)
     _check_limit(len(sources), limits.INPUT_MAX_DATA_VARIABLES, "data variables")
     x = domain.west + (np.arange(domain.cols, dtype=np.float64) + 0.5) * (
         (domain.east - domain.west) / domain.cols

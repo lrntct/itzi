@@ -14,7 +14,9 @@ GNU General Public License for more details.
 
 from __future__ import annotations
 
+import hashlib
 import itertools
+import json
 import math
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -124,6 +126,7 @@ def normalize_time(value: TimeConfig) -> NormalizedTime:
     record_step = parse_duration(value.record_step)
     start = _parse_datetime(value.start) if value.start is not None else None
     end = _parse_datetime(value.end) if value.end is not None else None
+    source_start = start
     aware = [timestamp for timestamp in (start, end) if timestamp is not None and timestamp.tzinfo]
     naive = [
         timestamp for timestamp in (start, end) if timestamp is not None and not timestamp.tzinfo
@@ -161,6 +164,7 @@ def normalize_time(value: TimeConfig) -> NormalizedTime:
         duration=duration,
         record_step=record_step,
         had_timezone_offset=had_timezone_offset,
+        source_start=source_start,
     )
 
 
@@ -268,6 +272,9 @@ def load_yaml_stream(path: str | Path) -> LoadedYamlStream:
         source = SourceDocument(
             path=source_path,
             document_index=document_index,
+            yaml_sha256=hashlib.sha256(
+                json.dumps(raw_document, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            ).hexdigest(),
         )
         try:
             document = YamlEnsembleDocumentV1.model_validate(raw_document)
@@ -321,7 +328,8 @@ def expand_yaml_document(
     if count > MAX_ENSEMBLE_MEMBERS:
         sizes = ", ".join(f"{path}={len(values)}" for path, values in dimensions)
         raise EnsembleError(
-            f"ensemble expands to {count} simulations, exceeding the {MAX_ENSEMBLE_MEMBERS} limit ({sizes})"
+            f"ensemble expands to {count} simulations, "
+            f"exceeding the {MAX_ENSEMBLE_MEMBERS} limit ({sizes})"
         )
 
     simulations = []

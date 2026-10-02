@@ -53,6 +53,10 @@ def get_input_endpoint(input_id: str) -> str:
     return f"{get_execution_api_base()}/inputs/{quote(input_id, safe='')}"
 
 
+def get_runs_endpoint(simulation_id: str) -> str:
+    return f"{get_execution_api_base()}/simulations/{quote(simulation_id, safe='')}/runs"
+
+
 # Backward-compatible module attributes for callers that only need the default values.
 API_BASE = get_api_base()
 LOGIN_ENDPOINT = get_login_endpoint()

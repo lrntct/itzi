@@ -352,6 +352,40 @@ outputs: {}
         archive.build_archives(path, "token")
 
 
+def test_cloud_warns_about_omitted_outputs_and_default_code(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from itzi.cloud import archive
+    from itzi.ensemble.models import SourceDocument
+    from itzi.ensemble.schema import YamlEnsembleDocumentV1
+    from itzi.ensemble.yaml import expand_yaml_document
+
+    ensemble = expand_yaml_document(
+        SourceDocument(tmp_path / "study.yaml", 0),
+        YamlEnsembleDocumentV1.model_validate(
+            {
+                "schema_version": 1,
+                "ensemble": {"id": "study"},
+                "grass": {},
+                "time": {"duration": "00:10:00", "record_step": "00:05:00"},
+                "input": {"ground_elevation": "dem", "friction": "n"},
+                "parameters": {},
+                "drainage": {"swmm_input": "missing.inp"},
+                "outputs": {
+                    "drainage": {"vector_dataset": "drains"},
+                },
+            }
+        ),
+    )
+    messages: list[str] = []
+    monkeypatch.setattr(archive.msgr, "warning", messages.append)
+    archive._warn_omissions(ensemble)
+    assert len(messages) == 3
+    assert any("SWMM coupling" in message for message in messages)
+    assert any("drainage output" in message for message in messages)
+    assert any("water_depth" in message for message in messages)
+
+
 def test_input_format_uses_authenticated_execution_api(monkeypatch: pytest.MonkeyPatch) -> None:
     from itzi.cloud import archive
 

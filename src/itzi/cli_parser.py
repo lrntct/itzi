@@ -61,6 +61,11 @@ def add_cloud_subcommands(cloud_parser: argparse.ArgumentParser) -> None:
         nargs="+",
         help="One or more .yaml ensemble configuration files.",
     )
+    cloud_push_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Create a new Ensemble when the YAML is unchanged but its Input archive has changed.",
+    )
 
     cloud_status_parser = cloud_subparser.add_parser(
         "status", help="Display status of submitted cloud simulations."

@@ -5,6 +5,7 @@ from __future__ import annotations
 import sys
 from dataclasses import replace
 from datetime import datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
 
@@ -64,6 +65,29 @@ time:
   duration: "02:00:00"
   record_step: "00:05:00"
 {body}"""
+
+
+def test_yaml_document_hash_tracks_values_not_formatting(tmp_path: Path) -> None:
+    original = document() + "---\n" + document(ensemble_id="second")
+    before = load_yaml_stream(write_yaml(tmp_path, original))
+    formatted = original.replace("id: study", 'id: "study"  # same ID').replace(
+        'friction: "manning"', "friction: manning"
+    )
+    after_formatting = load_yaml_stream(write_yaml(tmp_path, formatted))
+
+    assert before.failures == after_formatting.failures == ()
+    assert [item.source.yaml_sha256 for item in before.ensembles] == [
+        item.source.yaml_sha256 for item in after_formatting.ensembles
+    ]
+
+    changed = load_yaml_stream(
+        write_yaml(
+            tmp_path, document(ensemble_id="changed") + "---\n" + document(ensemble_id="second")
+        )
+    )
+    assert changed.failures == ()
+    assert changed.ensembles[0].source.yaml_sha256 != before.ensembles[0].source.yaml_sha256
+    assert changed.ensembles[1].source.yaml_sha256 == before.ensembles[1].source.yaml_sha256
 
 
 def test_scalar_document_expands_to_one_member(tmp_path):

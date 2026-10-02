@@ -17,9 +17,9 @@ from __future__ import annotations
 import json
 import tempfile
 from datetime import UTC, datetime
+from hashlib import sha256
 from pathlib import Path
 from typing import Literal, TypedDict
-from uuid import NAMESPACE_URL, uuid5
 
 from platformdirs import user_data_dir
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, with_config
@@ -31,23 +31,24 @@ METADATA_VERSION = "1.0"
 
 
 class EnsembleDraft(BaseModel):
-    """Locally durable identity and server IDs for one YAML document."""
+    """Locally durable identity and server IDs for one YAML document and Input."""
 
     model_config = ConfigDict(frozen=True, extra="allow")
 
     email: str
     project_id: str
-    config_file: str
-    document_index: int
     member_labels: tuple[str, ...]
     grass_params: GrassParams
     archive_sha256: str
     idempotency_key: str
+    yaml_sha256: str
     ensemble_id: str | None = None
     input_id: str | None = None
     upload_stage: Literal["uploaded", "confirmed"] | None = None
     transfer_id: str | None = None
     confirmation_state: str | None = None
+    simulation_ids: dict[int, str] = Field(default_factory=dict)
+    run_ids: dict[int, str] = Field(default_factory=dict)
 
 
 @with_config(ConfigDict(extra="allow"))
@@ -97,37 +98,37 @@ def save_ensemble_draft(draft: EnsembleDraft) -> None:
 def get_or_create_ensemble_draft(
     email: str,
     project_id: str,
-    config_file: Path,
-    document_index: int,
     member_labels: tuple[str, ...],
     grass_params: GrassParams,
     archive_sha256: str,
+    yaml_sha256: str,
+    *,
+    force: bool = False,
 ) -> EnsembleDraft:
-    """Keep a stable idempotency key across failed requests and later invocations."""
-    path = str(config_file.resolve())
-    key = str(uuid5(NAMESPACE_URL, json.dumps((email, project_id, path, document_index))))
+    """Resume the same Input, or create a new Ensemble for a changed document/Input."""
+    key = sha256(json.dumps((email, project_id, yaml_sha256, archive_sha256)).encode()).hexdigest()
     metadata = _load_metadata_file(get_metadata_file_path())
     stored = metadata.ensembles.get(key)
     if stored is not None:
-        if (
-            stored.member_labels != member_labels
-            or stored.grass_params != grass_params
-            or stored.archive_sha256 != archive_sha256
-        ):
-            raise ValueError(
-                f"{path} document {document_index} has changed since cloud creation; "
-                "use a new YAML path for a new Ensemble"
-            )
         return stored
+    if not force and any(
+        draft.email == email
+        and draft.project_id == project_id
+        and draft.yaml_sha256 == yaml_sha256
+        for draft in metadata.ensembles.values()
+    ):
+        raise ValueError(
+            "The input archive differs from the one recorded for this yaml document; "
+            "use --force to create a new Ensemble."
+        )
     draft = EnsembleDraft(
         email=email,
         project_id=project_id,
-        config_file=path,
-        document_index=document_index,
         member_labels=member_labels,
         grass_params=grass_params,
         archive_sha256=archive_sha256,
         idempotency_key=key,
+        yaml_sha256=yaml_sha256,
     )
     save_ensemble_draft(draft)
     return draft
@@ -154,7 +155,7 @@ def get_metadata_file_path() -> Path:
     # Ensure directory has correct permissions even if it already existed
     storage_dir.chmod(0o700)
 
-    metadata_file = storage_dir / Path("cloud_simulations.json")
+    metadata_file = storage_dir / Path("cloud_ensembles.json")
 
     # Set restrictive permissions on metadata file (0600 - owner read/write only)
     if not metadata_file.exists():

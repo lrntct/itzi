@@ -124,7 +124,7 @@ def test_itzi_cloud_login_prompts_for_password(monkeypatch):
     assert calls == [("user@example.com", "secret")]
 
 
-def test_itzi_cloud_push_creates_ensemble_draft(monkeypatch):
+def test_itzi_cloud_push_creates_ensemble_draft(monkeypatch: pytest.MonkeyPatch) -> None:
     from pathlib import Path
 
     calls = []
@@ -157,10 +157,14 @@ def test_itzi_cloud_push_creates_ensemble_draft(monkeypatch):
         "itzi.cloud.push",
         create_ensemble=lambda archive, **kwargs: (
             calls.append((archive.path, kwargs))
-            or SimpleNamespace(ensemble_id="ensemble-1", input_id="input-1")
+            or SimpleNamespace(ensemble_id="ensemble-1", input_id="input-1", run_ids={})
         ),
         upload_input=lambda archive, draft, token: (
             calls.append((archive.path, draft.input_id, token)) or draft
+        ),
+        wait_for_input=lambda draft, token: draft,
+        launch_runs=lambda archive, draft, token: SimpleNamespace(
+            ensemble_id=draft.ensemble_id, input_id=draft.input_id, run_ids={0: "run-1"}
         ),
     )
     monkeypatch.setattr("itzi.cloud.cli.msgr.message", messages.append)
@@ -169,11 +173,16 @@ def test_itzi_cloud_push_creates_ensemble_draft(monkeypatch):
         ("one.yml", "token"),
         (
             Path("/tmp/input.tzst"),
-            {"project_id": "project-id", "email": "user@example.com", "session_token": "token"},
+            {
+                "project_id": "project-id",
+                "email": "user@example.com",
+                "session_token": "token",
+                "force": False,
+            },
         ),
         (Path("/tmp/input.tzst"), "input-1", "token"),
     ]
-    assert "Ensemble ensemble-1, Input input-1 confirmed; validation queued" in messages[0]
+    assert "Ensemble ensemble-1, Input input-1 accepted; runs: 0=run-1" in messages[0]
 
 
 def test_itzi_cloud_status_displays_single_simulation(monkeypatch):
