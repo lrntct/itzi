@@ -65,7 +65,7 @@ def get_simulation_results_url(
                     error_msg = "Failed to retrieve simulation results.\n"
                     error_msg += f"Status Code: {response.status_code}\n"
                     error_msg += f"API Response: {json.dumps(error_details, indent=2)}"
-            except (json.JSONDecodeError, ValueError):
+            except json.JSONDecodeError, ValueError:
                 # If response is not JSON, show basic error info
                 error_msg = "Failed to retrieve simulation results.\n"
                 error_msg += f"Status Code: {response.status_code}\n"
@@ -108,8 +108,7 @@ def download_results(
         # Save to temporary file
         temp_file = temp_dir / Path(f"{uuid.uuid4()}.tgz")
         with open(temp_file, "wb") as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                f.write(chunk)
+            f.writelines(response.iter_content(chunk_size=8192))
 
     return temp_file
 
@@ -131,7 +130,7 @@ def load_to_grass(temp_data_path: Path, grass_params: GrassParams, overwrite: bo
     time_mapping = {"start_time": "time"}
     dims_mapping = {}
     for var, da in ds_results.data_vars.items():
-        if "time" in da.coords.keys():
+        if "time" in da.coords:
             dims_mapping[var] = time_mapping
 
     with GrassSessionManager(grass_params):

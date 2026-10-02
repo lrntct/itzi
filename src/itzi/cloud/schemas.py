@@ -115,3 +115,9 @@ class SimulationResponseSchema(BaseModel):
 class RunResponseSchema(BaseModel):
     run_id: str = Field(min_length=1)
     simulation_id: str
+
+
+class RunRequestErrorResponseSchema(BaseModel):
+    detail: str
+    code: str
+    next_action: str

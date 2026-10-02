@@ -40,6 +40,7 @@ itzi = "itzi.itzi:main"
 [project.optional-dependencies]
 cloud = [
     "keyring>=25.7.0",
+    "pandas>=3.0.3",
     "platformdirs>=4.10.0",
     "pyproj>=3.7.2",
     "xarray-grass>=0.5.0",

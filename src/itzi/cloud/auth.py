@@ -13,15 +13,16 @@ GNU General Public License for more details.
 """
 
 from __future__ import annotations
+
 import json
 
 import itzi.messenger as msgr
 from itzi.cloud import urls
 
 try:
-    import requests
     import keyring
     import keyring.errors
+    import requests
 except ImportError:
     raise ImportError(
         "To use the cloud functionalities, install itzi with: "
@@ -73,7 +74,6 @@ def get_token(email: str) -> str:
             f"No authentication token found for {email}. "
             "Please log in first using 'itzi cloud login'."
         )
-        assert False, "Here for type narrowing, remove when ty can understand it"
     return token
 
 
@@ -85,33 +85,31 @@ def get_default_email() -> None | str:
 def logout(email: str, url: str | None = None) -> None:
     """Logout from the service. Clear stored token."""
     url = url or urls.get_session_endpoint()
-    # 1. Log out
+    token = keyring.get_password("itzi_cloud", email)
     try:
-        token = get_token(email)
-        # Log out from server
-        headers = {"X-Session-Token": token}
-        with requests.Session() as session:
-            response = session.delete(url, headers=headers)
-        if response.status_code == 401:
-            msgr.message(f"{email} successfully logged out.")
-    except Exception:
-        # No token found, but still try to delete local credentials
-        msgr.message(f"No active session found for {email}")
-
-    # 2. Delete token
-    try:
-        keyring.delete_password("itzi_cloud", email)
-    except keyring.errors.PasswordDeleteError:
-        pass  # Already deleted or never existed
+        if token is None:
+            msgr.message(f"No stored session found for {email}")
+        else:
+            try:
+                with requests.Session() as session:
+                    response = session.delete(url, headers={"X-Session-Token": token})
+            except requests.RequestException as error:
+                msgr.warning(f"Could not revoke the remote session: {error}")
+            else:
+                if response.status_code == 401:
+                    msgr.message(f"{email} successfully logged out.")
+    finally:
+        try:
+            keyring.delete_password("itzi_cloud", email)
+        except keyring.errors.PasswordDeleteError:
+            pass  # Already deleted or never existed
 
 
 def is_logged(email: str, url: str | None = None) -> bool:
     """Get authentication status."""
     url = url or urls.get_session_endpoint()
-    try:
-        token = get_token(email)
-    except Exception:
-        # No token found = not logged in
+    token = keyring.get_password("itzi_cloud", email)
+    if token is None:
         return False
 
     headers = {"X-Session-Token": token}
@@ -130,7 +128,6 @@ def is_logged(email: str, url: str | None = None) -> bool:
 
 
 def get_email(email_cli: str | None = None) -> str:
-    """ """
     default_email = get_default_email()
 
     if email_cli:

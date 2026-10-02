@@ -83,6 +83,8 @@ class FakeCloudState:
         self.validation_state: str | None = None
         self.simulation_puts: list[tuple[str, int, dict[str, Any], str]] = []
         self.run_requests: list[tuple[str, str, str]] = []
+        self.unsealed_run_requests = 0
+        self.run_errors: dict[str, tuple[int, dict[str, str]]] = {}
         self.fail_simulation: int | None = None
         self.fail_run: int | None = None
         self.lose_simulation_response = False
@@ -115,6 +117,21 @@ class FakeCloudRequestHandler(BaseHTTPRequestHandler):
             self.server.state.run_requests.append(
                 (simulation_id, key, self.headers.get("X-Session-Token", ""))
             )
+            if self.server.state.unsealed_run_requests:
+                self.server.state.unsealed_run_requests -= 1
+                self._send_json(
+                    409,
+                    {
+                        "detail": "The Ensemble result repository must be sealed.",
+                        "code": "result_repository_not_sealed",
+                        "next_action": "wait_for_result_repository",
+                    },
+                )
+                return
+            if simulation_id in self.server.state.run_errors:
+                status_code, payload = self.server.state.run_errors[simulation_id]
+                self._send_json(status_code, payload)
+                return
             if self.server.state.fail_run is not None and simulation_id.endswith(
                 f"-{self.server.state.fail_run}"
             ):
@@ -1137,6 +1154,117 @@ def test_cloud_push_resumes_failed_member_and_replays_run_key(
 
 
 @pytest.mark.cloud
+def test_cloud_push_retries_until_result_repository_is_sealed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, fake_cloud_server: FakeCloudServer
+) -> None:
+    from itzi.cloud import archive, push
+
+    ctx = _configure_cloud_test_environment(monkeypatch, tmp_path, fake_cloud_server)
+    itzi_cloud_login(
+        argparse.Namespace(email="user@example.com", password="secret", logout=False, status=False)
+    )
+    path = tmp_path / "input.tzst"
+    path.write_bytes(b"input")
+    built = _fake_archive(path, tmp_path / "study.yaml", ctx.grass_params, members=2)
+    monkeypatch.setattr(archive, "build_archives", lambda *_: (built,))
+    monkeypatch.setattr(push, "RESULT_REPOSITORY_POLL_SECONDS", 0)
+    state = fake_cloud_server.state
+    state.member_labels["input-1"] = ["member-0-0", "member-0-1"]
+    state.unsealed_run_requests = 2
+    args = argparse.Namespace(project="proj-public", config_file=[str(built.ensemble.source.path)])
+
+    itzi_cloud_push(args)
+
+    assert len(state.simulation_puts) == 2
+    assert [sim for sim, _, _ in state.run_requests] == ["simulation-input-1-0"] * 3 + [
+        "simulation-input-1-1"
+    ]
+    assert len({key for _, key, _ in state.run_requests[:3]}) == 1
+    assert all(token == "token-1" for _, _, token in state.run_requests)
+    itzi_cloud_push(args)
+    assert len(state.simulation_puts) == 2
+    assert len(state.run_requests) == 4
+
+
+@pytest.mark.cloud
+@pytest.mark.parametrize("failure", ["pending", "other_conflict", "wrong_action", "malformed"])
+def test_cloud_push_repository_failure_preserves_progress_and_resumes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    fake_cloud_server: FakeCloudServer,
+    capsys: pytest.CaptureFixture[str],
+    failure: str,
+) -> None:
+    from itzi.cloud import archive, push
+
+    ctx = _configure_cloud_test_environment(monkeypatch, tmp_path, fake_cloud_server)
+    itzi_cloud_login(
+        argparse.Namespace(email="user@example.com", password="secret", logout=False, status=False)
+    )
+    path = tmp_path / "input.tzst"
+    path.write_bytes(b"input")
+    built = _fake_archive(path, tmp_path / "study.yaml", ctx.grass_params, members=2)
+    monkeypatch.setattr(archive, "build_archives", lambda *_: (built,))
+    elapsed = 0.0
+    sleeps: list[float] = []
+
+    def advance_clock(seconds: float) -> None:
+        nonlocal elapsed
+        sleeps.append(seconds)
+        elapsed += seconds
+
+    monkeypatch.setattr(push.time, "monotonic", lambda: elapsed)
+    monkeypatch.setattr(push.time, "sleep", advance_clock)
+    state = fake_cloud_server.state
+    state.member_labels["input-1"] = ["member-0-0", "member-0-1"]
+    payload = {"detail": "The Ensemble result repository must be sealed."}
+    if failure != "malformed":
+        payload |= {
+            "code": "simulation_not_eligible"
+            if failure == "other_conflict"
+            else "result_repository_not_sealed",
+            "next_action": "create_new_simulation"
+            if failure in ("other_conflict", "wrong_action")
+            else "wait_for_result_repository",
+        }
+    state.run_errors["simulation-input-1-1"] = (409, payload)
+    args = argparse.Namespace(project="proj-public", config_file=[str(built.ensemble.source.path)])
+    with pytest.raises(
+        FatalError,
+        match="Ensemble ensemble-1.*not sealed after 10 seconds.*Retry cloud push"
+        if failure == "pending"
+        else "member 1.*409.*Retry cloud push",
+    ):
+        itzi_cloud_push(args)
+
+    draft = next(
+        iter(
+            json.loads(ctx.metadata_storage.get_metadata_file_path().read_text())[
+                "ensembles"
+            ].values()
+        )
+    )
+    assert set(draft["simulation_ids"]) == {"0", "1"}
+    assert draft["run_ids"] == {"0": "run-simulation-input-1-0"}
+    assert elapsed == (10 if failure == "pending" else 0)
+    assert sleeps == ([2] * 5 if failure == "pending" else [])
+    requests_before_resume = 6 if failure == "pending" else 2
+    assert len(state.run_requests) == requests_before_resume
+    if failure != "pending":
+        assert (
+            f"POST {fake_cloud_server.base_url}/execution-api/v1/simulations/"
+            "simulation-input-1-1/runs: None"
+        ) in capsys.readouterr().err
+
+    state.run_errors.clear()
+    itzi_cloud_push(args)
+    assert len(state.simulation_puts) == 2
+    assert len(state.ensemble_creates) == len(state.uploads) == len(state.confirm_requests) == 1
+    assert len(state.run_requests) == requests_before_resume + 1
+    assert len({key for sim, key, _ in state.run_requests if sim == "simulation-input-1-1"}) == 1
+
+
+@pytest.mark.cloud
 @pytest.mark.parametrize(
     ("time", "absolute_start"),
     [
@@ -1147,11 +1275,11 @@ def test_cloud_push_resumes_failed_member_and_replays_run_key(
                 "duration": "00:10:00",
                 "record_step": "00:05:00",
             },
-            "2026-09-30T12:00:00+05:30",
+            "2026-09-30T06:30:00+00:00",
         ),
         (
             {"start": "2026-09-30T12:00:00", "duration": "00:10:00", "record_step": "00:05:00"},
-            datetime(2026, 9, 30, 12).astimezone().isoformat(),
+            datetime(2026, 9, 30, 12).astimezone(UTC).isoformat(),
         ),
     ],
 )

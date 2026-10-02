@@ -23,12 +23,13 @@ import warnings
 from compression.zstd import CompressionParameter
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, replace
-from datetime import timedelta
+from datetime import UTC, timedelta
 from multiprocessing import get_context
 from pathlib import Path
 from typing import TypedDict
 
 import numpy as np
+import pandas as pd
 import requests
 import xarray as xr
 import zarr
@@ -44,6 +45,7 @@ from itzi.cloud import urls
 from itzi.ensemble import load_yaml_stream
 from itzi.ensemble.models import (
     ExpandedEnsemble,
+    NormalizedTime,
     OutputTemplates,
     ResolvedSimulation,
     ValidationFailure,
@@ -159,6 +161,21 @@ def convert_relative_time_coordinate(coord: xr.DataArray) -> xr.DataArray:
     return converted_coord
 
 
+def convert_absolute_time_coordinate(coord: xr.DataArray) -> xr.DataArray:
+    """Encode GRASS absolute times as UTC, treating naive times as local."""
+    times = []
+    for value in coord.values:
+        timestamp = pd.Timestamp(value)
+        if not isinstance(timestamp, pd.Timestamp):
+            raise TypeError(f"{coord.name} has missing times")
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.tz_localize(
+                timestamp.to_pydatetime(warn=False).astimezone().tzinfo
+            )
+        times.append(timestamp.tz_convert(UTC).tz_localize(None).to_datetime64())
+    return coord.copy(data=np.array(times))
+
+
 def get_input_format(session_token: str) -> InputFormat:
     response = requests.get(
         f"{urls.get_execution_api_base()}/input-formats/precipient-itzi-input-v1",
@@ -250,6 +267,7 @@ def source_names(simulations: tuple[ResolvedSimulation, ...]) -> dict[tuple[str,
 def _dataset(
     simulations: tuple[ResolvedSimulation, ...],
     limits: InputLimits,
+    time: NormalizedTime,
 ) -> xr.Dataset:
     first = simulations[0]
     domain = first.domain_data
@@ -335,6 +353,19 @@ def _dataset(
                             first.simulation_config.start_time,
                             first.simulation_config.end_time,
                         )
+                    if (
+                        first.simulation_config.temporal_type == TemporalType.ABSOLUTE
+                        and variable[old_time].dtype.kind == "O"
+                        and variable[old_time].size
+                        and pd.Timestamp(variable[old_time].values[0]).tzinfo is not None
+                    ):
+                        assert time.source_start is not None
+                        start = (
+                            time.source_start
+                            if time.source_start.tzinfo
+                            else time.source_start.astimezone()
+                        )
+                        end = start + time.duration
                     variable = variable.sel({old_time: slice(start, end)})
                     if not variable.sizes[old_time]:
                         raise ValueError(f"{identifier} has no samples during simulation time")
@@ -361,6 +392,11 @@ def _dataset(
                             [interface.read_raster_map(map_rows[index][0]) for index in indices]
                         )
                     variable = variable.copy(data=data)
+                if time_dims and first.simulation_config.temporal_type == TemporalType.ABSOLUTE:
+                    time_name = f"time_{name}"
+                    variable = variable.assign_coords(
+                        {time_name: convert_absolute_time_coordinate(variable[time_name])}
+                    )
                 variable = variable.assign_coords(x=x, y=y)
                 variable = variable.where(~mask) if mask.any() else variable
                 variable.attrs = {"units": variable.attrs.get("units", "")}
@@ -435,7 +471,7 @@ def build_archive(
         raise ValueError("All expanded members must resolve before building an Input")
     limits = capability.limits
     _warn_omissions(ensemble)
-    ds = _dataset(simulations, limits)
+    ds = _dataset(simulations, limits, ensemble.simulations[0].time)
     encoding = _encoding(ds, limits)
     owned = destination is None
     path = destination or Path(tempfile.mkdtemp(prefix="itzi-input-")) / "input.tzst"

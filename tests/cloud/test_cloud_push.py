@@ -3,10 +3,11 @@ from __future__ import annotations
 import hashlib
 import sys
 import tarfile
+import time
 import types
 import warnings
 from contextlib import contextmanager, nullcontext
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import numpy as np
@@ -79,6 +80,143 @@ def test_relative_time_coordinate_without_units() -> None:
 
     with pytest.raises(ValueError, match="unsupported unit <None>"):
         convert_relative_time_coordinate(xr.DataArray([0, 1], dims="time"))
+
+
+def test_absolute_time_coordinate_rejects_missing_times() -> None:
+    import xarray as xr
+
+    from itzi.cloud.archive import convert_absolute_time_coordinate
+
+    coord = xr.DataArray(
+        np.array(["2007-06-25T10:00:00", "NaT"], dtype="datetime64[ns]"),
+        dims="time",
+        name="time_source_0",
+    )
+    with pytest.raises(TypeError, match="time_source_0 has missing times"):
+        convert_absolute_time_coordinate(coord)
+
+
+@pytest.mark.parametrize(
+    ("source_start", "map_start", "utc_start", "object_naive"),
+    [
+        ("2007-06-25T10:00:00", "2007-06-25T10:00:00", "2007-06-25T15:00:00", False),
+        ("2007-06-25T10:00:00", "2007-06-25T10:00:00", "2007-06-25T15:00:00", True),
+        ("2007-01-25T10:00:00", "2007-01-25T10:00:00", "2007-01-25T16:00:00", False),
+        (
+            "2007-06-25T10:00:00+02:00",
+            "2007-06-25T10:00:00+02:00",
+            "2007-06-25T08:00:00",
+            False,
+        ),
+        (
+            "2007-06-25T10:00:00+02:00",
+            "2007-06-25T08:00:00+00:00",
+            "2007-06-25T08:00:00",
+            False,
+        ),
+    ],
+)
+def test_absolute_archive_times_match_output_instants(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    source_start: str,
+    map_start: str,
+    utc_start: str,
+    object_naive: bool,
+) -> None:
+    import xarray as xr
+    from itzi_core import DomainData
+
+    from itzi.cloud import archive, push
+    from itzi.ensemble.models import EffectiveMask
+    from itzi.ensemble.schema import TimeConfig
+    from itzi.ensemble.yaml import normalize_time
+
+    start = datetime.fromisoformat(source_start)
+    map_time = datetime.fromisoformat(map_start)
+    grass_start = start.replace(tzinfo=None)
+    normalized = normalize_time(
+        TimeConfig(start=source_start, duration="02:00:00", record_step="01:00:00")
+    )
+    grass = GrassParams(grassdata=str(tmp_path), location="project", mapset="mapset")
+    simulation = types.SimpleNamespace(
+        simulation_id="sim",
+        grass_params=grass,
+        domain_data=DomainData(
+            north=50, south=0, east=50, west=0, rows=5, cols=5, crs_wkt=LOCAL_CRS_WKT
+        ),
+        effective_mask=EffectiveMask("none", None),
+        input_kinds=(("rainfall_rate", "strds"),),
+        simulation_config=types.SimpleNamespace(
+            start_time=grass_start,
+            end_time=grass_start + timedelta(hours=2),
+            temporal_type=TemporalType.ABSOLUTE,
+            input_map_names={"rainfall_rate": "rain@mapset"},
+        ),
+    )
+    fake_module = types.ModuleType("itzi.grass.interface")
+    fake_module.GrassInterface = lambda **_kwargs: nullcontext(  # type: ignore[attr-defined]
+        types.SimpleNamespace(get_npmask=lambda: np.zeros((5, 5), dtype=bool))
+    )
+    limits = archive.InputLimits.model_validate(
+        dict.fromkeys(archive.InputLimits.model_fields, 1_000_000_000)
+        | {"INPUT_MIN_SPATIAL_COORDINATE_SAMPLES": 5}
+    )
+
+    def read_rainfall(*_args, **_kwargs) -> xr.Dataset:
+        map_times = [map_time + timedelta(hours=hour) for hour in range(-1, 4)]
+        time_coord = (
+            xr.Variable(("start_time_rain",), np.array(map_times, dtype=object), fastpath=True)
+            if object_naive
+            else map_times
+        )
+        return xr.Dataset(
+            {
+                "rain": (
+                    ("start_time_rain", "y", "x"),
+                    np.ones((5, 5, 5), dtype=np.float32),
+                )
+            },
+            coords={
+                "start_time_rain": time_coord,
+                "x": np.arange(5) * 10 + 5,
+                "y": np.arange(5)[::-1] * 10 + 5,
+            },
+            attrs={"crs_wkt": LOCAL_CRS_WKT},
+        )
+
+    try:
+        with monkeypatch.context() as patch:
+            patch.setenv("TZ", "America/Chicago")
+            time.tzset()
+            patch.setattr(archive, "GrassSessionManager", lambda *_: nullcontext())
+            patch.setitem(sys.modules, "itzi.grass.interface", fake_module)
+            patch.setattr(xr, "open_dataset", read_rainfall)
+            ds = archive._dataset((simulation,), limits, normalized)
+            ds.to_zarr(
+                tmp_path / "input.zarr",
+                mode="w",
+                zarr_format=3,
+                encoding=archive._encoding(ds, limits),
+            )
+            stored = xr.open_zarr(tmp_path / "input.zarr", consolidated=False)
+            expected = np.array(
+                [np.datetime64(utc_start) + np.timedelta64(hour, "h") for hour in range(3)]
+            )
+            np.testing.assert_array_equal(stored.time_source_0.values, expected)
+
+            member = types.SimpleNamespace(
+                time=normalized, outputs=types.SimpleNamespace(raster_variables=("water_depth",))
+            )
+            output = push._output_configuration(
+                types.SimpleNamespace(ensemble=types.SimpleNamespace(simulations=(member,)))
+            )
+            assert (
+                output["absolute_start_time"]
+                == datetime.fromisoformat(utc_start).replace(tzinfo=UTC).isoformat()
+            )
+    finally:
+        time.tzset()
 
 
 def test_two_member_input_archive(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

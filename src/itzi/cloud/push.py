@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import sys
 import time
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -36,12 +37,15 @@ from itzi.cloud.schemas import (
     InputConfirmationSchema,
     InputUploadInstructionSchema,
     InputUploadStatusSchema,
+    RunRequestErrorResponseSchema,
     RunResponseSchema,
     SimulationResponseSchema,
 )
 
 VALIDATION_WAIT_SECONDS = 60
 VALIDATION_POLL_SECONDS = 2
+RESULT_REPOSITORY_WAIT_SECONDS = 10
+RESULT_REPOSITORY_POLL_SECONDS = 2
 
 
 def create_ensemble(
@@ -271,7 +275,7 @@ def _output_configuration(archive: BuiltArchive) -> dict[str, str | int | list[s
     if member.time.temporal_type == TemporalType.ABSOLUTE:
         if start is None:
             raise ValueError("Absolute YAML time requires a start timestamp")
-        absolute_start = (start if start.tzinfo else start.astimezone()).isoformat()
+        absolute_start = start.astimezone(UTC).isoformat()
 
     return {
         "selected_output_codes": codes,
@@ -283,10 +287,47 @@ def _output_configuration(archive: BuiltArchive) -> dict[str, str | int | list[s
     }
 
 
+def _request_run(
+    simulation_id: str, ensemble_id: str, headers: dict[str, str]
+) -> RunResponseSchema:
+    """Retry a Run request while its result repository is being sealed."""
+    deadline = time.monotonic() + RESULT_REPOSITORY_WAIT_SECONDS
+    while True:
+        response = requests.post(
+            urls.get_runs_endpoint(simulation_id),
+            headers=headers,
+            timeout=max(0.001, deadline - time.monotonic()),
+        )
+        if response.status_code == 409:
+            failure = None
+            try:
+                failure = RunRequestErrorResponseSchema.model_validate(response.json())
+            except ValueError:
+                pass
+            if (
+                failure is not None
+                and failure.code == "result_repository_not_sealed"
+                and failure.next_action == "wait_for_result_repository"
+            ):
+                remaining = deadline - time.monotonic()
+                if remaining > 0:
+                    time.sleep(min(RESULT_REPOSITORY_POLL_SECONDS, remaining))
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(
+                        f"Ensemble {ensemble_id} result repository is still not sealed after "
+                        f"{RESULT_REPOSITORY_WAIT_SECONDS} seconds; "
+                        "next action: wait_for_result_repository"
+                    )
+                continue
+        response.raise_for_status()
+        return RunResponseSchema.model_validate(response.json())
+
+
 def launch_runs(archive: BuiltArchive, draft: EnsembleDraft, session_token: str) -> EnsembleDraft:
     """PUT immutable member configurations and request one idempotent Run per member."""
     if draft.input_id is None or draft.ensemble_id is None:
         raise ValueError("Create the Ensemble before creating Simulations")
+    ensemble_id = draft.ensemble_id
     input_url = urls.get_input_endpoint(draft.input_id)
     output = _output_configuration(archive)
     sources = source_names(archive.simulations)
@@ -330,27 +371,33 @@ def launch_runs(archive: BuiltArchive, draft: EnsembleDraft, session_token: str)
                 )
                 save_ensemble_draft(draft)
             if index not in draft.run_ids:
-                response = requests.post(
-                    urls.get_runs_endpoint(simulation_id),
-                    headers={
+                run = _request_run(
+                    simulation_id,
+                    ensemble_id,
+                    {
                         **headers,
                         "Idempotency-Key": hashlib.sha256(
                             f"{draft.idempotency_key}/run/{index}".encode()
                         ).hexdigest(),
                     },
-                    timeout=30,
                 )
-                response.raise_for_status()
-                run = RunResponseSchema.model_validate(response.json())
                 if run.simulation_id != simulation_id:
                     raise ValueError("Run response refers to another Simulation")
                 draft = draft.model_copy(update={"run_ids": draft.run_ids | {index: run.run_id}})
                 save_ensemble_draft(draft)
-        except (requests.RequestException, ValueError, KeyError) as error:
+        except (requests.RequestException, ValueError, KeyError, TimeoutError) as error:
+            if isinstance(error, requests.HTTPError) and error.response is not None:
+                request = error.response.request
+                print(f"{request.method} {request.url}: {request.body}", file=sys.stderr)
+                print(
+                    f"member {index} server response ({error.response.status_code}): "
+                    f"{error.response.text}",
+                    file=sys.stderr,
+                )
             errors.append(f"member {index} ({draft.member_labels[index]}): {error}")
     if errors:
         raise ValueError(
-            f"Ensemble {draft.ensemble_id} launched"
+            f"Ensemble {draft.ensemble_id} launched "
             f"{len(draft.run_ids)}/{len(archive.simulations)} members; "
             f"{'; '.join(errors)}. Retry cloud push to resume."
         )

@@ -609,6 +609,7 @@ dependencies = [
 [package.optional-dependencies]
 cloud = [
     { name = "keyring" },
+    { name = "pandas" },
     { name = "platformdirs" },
     { name = "pyproj" },
     { name = "xarray", extra = ["io", "parallel"] },
@@ -636,6 +637,7 @@ requires-dist = [
     { name = "itzi-core", specifier = "==0.8.0" },
     { name = "keyring", marker = "extra == 'cloud'", specifier = ">=25.7.0" },
     { name = "numpy", specifier = ">=2.5" },
+    { name = "pandas", marker = "extra == 'cloud'", specifier = ">=3.0.3" },
     { name = "platformdirs", marker = "extra == 'cloud'", specifier = ">=4.10.0" },
     { name = "pydantic", specifier = ">=2.10" },
     { name = "pyproj", marker = "extra == 'cloud'", specifier = ">=3.7.2" },
