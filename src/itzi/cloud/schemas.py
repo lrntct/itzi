@@ -20,22 +20,6 @@ from typing import Literal
 from pydantic import AliasPath, BaseModel, Field
 
 
-class SimulationTaskSchema(BaseModel):
-    """Schema for retrieving simulation task status."""
-
-    team: str
-    project_slug: str
-    created_on: datetime
-    last_updated: datetime
-    fingerprint: str
-    status: str
-    progress: int
-    input_bytes: int
-    results_bytes: int
-    error_stage: str = ""
-    error_message: str = ""
-
-
 class ResultsDownloadResponseSchema(BaseModel):
     """Schema containing instructions for downloading simulation results."""
 
@@ -102,6 +86,85 @@ class InputFailureSchema(BaseModel):
 class AcceptedMemberSchema(BaseModel):
     index: int
     label: str
+
+
+class InputStorageSchema(BaseModel):
+    reserved_bytes: int
+    accepted_bytes: int
+
+
+class AccountStorageSchema(InputStorageSchema):
+    entitlement_bytes: int
+    available_bytes: int
+
+
+class AcceptedVariableSchema(BaseModel):
+    name: str
+    dtype: str
+    dimensions: tuple[str, ...]
+    shape: tuple[int, ...]
+    member_scope: str
+    time_coordinate: str | None = None
+
+
+class CellEdgeExtentSchema(BaseModel):
+    minimum_x: float
+    minimum_y: float
+    maximum_x: float
+    maximum_y: float
+
+
+class CoordinateSummarySchema(BaseModel):
+    name: str
+    axis: str
+    dtype: str
+    size: int
+    first: int | float | str
+    last: int | float | str
+    resolution: float | None = None
+    unit: str | None = None
+
+
+class TimeCoverageSchema(BaseModel):
+    coordinate_name: str
+    start: int | float | str
+    end: int | float | str
+    unit: str | None = None
+
+
+class SupportedMetadataSchema(BaseModel):
+    zarr_format: int = 3
+    temporal_type: str
+
+
+class InputAcceptanceSchema(BaseModel):
+    """Public scientific facts, without storage locators or arbitrary metadata."""
+
+    contract_revision: str
+    accepted_at: datetime
+    variables: tuple[AcceptedVariableSchema, ...] = Field(
+        validation_alias=AliasPath("variable_inventory", "variables")
+    )
+    crs_wkt: str = Field(validation_alias=AliasPath("crs", "wkt"))
+    extent: CellEdgeExtentSchema
+    coordinate_summaries: tuple[CoordinateSummarySchema, ...]
+    time_coverage: tuple[TimeCoverageSchema, ...]
+    supported_metadata: SupportedMetadataSchema
+
+
+class InputDetailFailureSchema(InputFailureSchema):
+    kind: str
+    code: str
+
+
+class InputDetailSchema(InputUploadStatusSchema):
+    project_id: str
+    ensemble_id: str
+    state_changed_at: datetime
+    failure: InputDetailFailureSchema | None = None
+    acceptance: InputAcceptanceSchema | None
+    input_storage: InputStorageSchema
+    account_storage: AccountStorageSchema
 
 
 class SimulationResponseSchema(BaseModel):

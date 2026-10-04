@@ -50,12 +50,27 @@ def test_cloud_push_help_requests_public_project_id(capsys):
     assert ".yaml ensemble configuration files" in help_text
 
 
-def test_cloud_status_parser_accepts_optional_fingerprint():
-    args = build_parser().parse_args(["cloud", "status", "fp-123"])
+@pytest.mark.parametrize("ensemble_id", [None, "ensemble-123"])
+def test_cloud_status_parser_accepts_optional_ensemble_id(ensemble_id: str | None) -> None:
+    argv = ["cloud", "status"] + ([ensemble_id] if ensemble_id else [])
+    args = build_parser().parse_args(argv)
 
     assert args.command == "cloud"
     assert args.cloud_command == "status"
-    assert args.fingerprint == "fp-123"
+    assert args.ensemble_id == ensemble_id
+    assert not hasattr(args, "fingerprint")
+
+
+def test_cloud_status_help_describes_local_selection(capsys) -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        build_parser().parse_args(["cloud", "status", "--help"])
+
+    assert exc_info.value.code == 0
+    help_text = capsys.readouterr().out
+    assert "ENSEMBLE_ID" in help_text
+    assert "locally recorded Ensemble ID" in help_text
+    assert "defaults to submissions for this account" in " ".join(help_text.split())
+    assert "fingerprint" not in help_text
 
 
 def test_cloud_project_parser_accepts_list_option():

@@ -53,6 +53,10 @@ def get_input_endpoint(input_id: str) -> str:
     return f"{get_execution_api_base()}/inputs/{quote(input_id, safe='')}"
 
 
+def get_ensemble_simulations_endpoint(ensemble_id: str) -> str:
+    return f"{get_execution_api_base()}/ensembles/{quote(ensemble_id, safe='')}/simulations"
+
+
 def get_runs_endpoint(simulation_id: str) -> str:
     return f"{get_execution_api_base()}/simulations/{quote(simulation_id, safe='')}/runs"
 

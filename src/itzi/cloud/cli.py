@@ -86,23 +86,31 @@ def itzi_cloud_push(cli_args: argparse.Namespace) -> None:
             msgr.fatal(f"{conf_file}: cloud push failed: {error}")
 
 
-def itzi_cloud_status(cli_args) -> None:
-    """List the requested simulations or display status of a specific simulation."""
+def itzi_cloud_status(cli_args: argparse.Namespace) -> None:
+    """List cloud submissions, or show detailed status for one Ensemble."""
+    import requests
+
     from itzi.cloud.auth import check_login, get_token
-    from itzi.cloud.status import display_simulations_list, get_simulation, get_simulations_list
+    from itzi.cloud.status import (
+        display_ensemble_statuses,
+        display_ensemble_table,
+        get_ensemble_statuses,
+    )
 
     os.environ["ITZI_VERBOSE"] = str(VerbosityLevel.MESSAGE)
 
     email = check_login()
 
-    if cli_args.fingerprint:
-        # Query single simulation by fingerprint
-        task = get_simulation(session_token=get_token(email), fingerprint=cli_args.fingerprint)
-        display_simulations_list([task])
+    try:
+        statuses = get_ensemble_statuses(
+            session_token=get_token(email), email=email, ensemble_id=cli_args.ensemble_id
+        )
+    except (requests.RequestException, ValueError, OSError) as error:
+        msgr.fatal(f"Cloud status failed: {error}")
+    if cli_args.ensemble_id is None:
+        display_ensemble_table(statuses)
     else:
-        # List all simulations
-        tasks = get_simulations_list(session_token=get_token(email))
-        display_simulations_list(tasks)
+        display_ensemble_statuses(statuses)
 
 
 def itzi_cloud_project(cli_args: argparse.Namespace) -> None:

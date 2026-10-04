@@ -185,8 +185,11 @@ def test_itzi_cloud_push_creates_ensemble_draft(monkeypatch: pytest.MonkeyPatch)
     assert "Ensemble ensemble-1, Input input-1 accepted; runs: 0=run-1" in messages[0]
 
 
-def test_itzi_cloud_status_displays_single_simulation(monkeypatch):
-    calls = {"get_simulation": [], "display": []}
+@pytest.mark.parametrize("ensemble_id", [None, "ensemble-123"])
+def test_itzi_cloud_status_displays_submissions(
+    monkeypatch: pytest.MonkeyPatch, ensemble_id: str | None
+) -> None:
+    calls = {"get_statuses": [], "display": [], "table": []}
     monkeypatch.delenv("ITZI_VERBOSE", raising=False)
     install_stub_module(
         monkeypatch,
@@ -197,23 +200,25 @@ def test_itzi_cloud_status_displays_single_simulation(monkeypatch):
     install_stub_module(
         monkeypatch,
         "itzi.cloud.status",
-        get_simulation=lambda session_token, fingerprint: (
-            calls["get_simulation"].append((session_token, fingerprint))
-            or {"fingerprint": fingerprint}
+        get_ensemble_statuses=lambda session_token, email, ensemble_id: (
+            calls["get_statuses"].append((session_token, email, ensemble_id))
+            or ("ensemble status",)
         ),
-        get_simulations_list=lambda **kwargs: pytest.fail("list should not run"),
-        display_simulations_list=lambda tasks: calls["display"].append(tasks),
+        display_ensemble_statuses=lambda statuses: calls["display"].append(statuses),
+        display_ensemble_table=lambda statuses: calls["table"].append(statuses),
     )
 
-    itzi_cloud_status(argparse.Namespace(fingerprint="fp-123"))
+    itzi_cloud_status(argparse.Namespace(ensemble_id=ensemble_id))
 
     assert os.environ["ITZI_VERBOSE"] == str(VerbosityLevel.MESSAGE)
-    assert calls["get_simulation"] == [("token-123", "fp-123")]
-    assert calls["display"] == [[{"fingerprint": "fp-123"}]]
+    assert calls["get_statuses"] == [("token-123", "user@example.com", ensemble_id)]
+    assert calls["display"] == ([("ensemble status",)] if ensemble_id is not None else [])
+    assert calls["table"] == ([("ensemble status",)] if ensemble_id is None else [])
 
 
-def test_itzi_cloud_status_displays_simulation_list(monkeypatch):
-    calls = {"get_simulations_list": [], "display": []}
+def test_itzi_cloud_status_reports_lookup_failure(monkeypatch) -> None:
+    from itzi.messenger import FatalError
+
     install_stub_module(
         monkeypatch,
         "itzi.cloud.auth",
@@ -223,17 +228,15 @@ def test_itzi_cloud_status_displays_simulation_list(monkeypatch):
     install_stub_module(
         monkeypatch,
         "itzi.cloud.status",
-        get_simulation=lambda **kwargs: pytest.fail("single lookup should not run"),
-        get_simulations_list=lambda session_token: (
-            calls["get_simulations_list"].append(session_token) or [{"fingerprint": "fp-123"}]
+        get_ensemble_statuses=lambda **kwargs: (_ for _ in ()).throw(
+            ValueError("No local submission found for Ensemble missing")
         ),
-        display_simulations_list=lambda tasks: calls["display"].append(tasks),
+        display_ensemble_statuses=lambda statuses: pytest.fail("display should not run"),
+        display_ensemble_table=lambda statuses: pytest.fail("display should not run"),
     )
 
-    itzi_cloud_status(argparse.Namespace(fingerprint=None))
-
-    assert calls["get_simulations_list"] == ["token-123"]
-    assert calls["display"] == [[{"fingerprint": "fp-123"}]]
+    with pytest.raises(FatalError, match="Cloud status failed: No local submission"):
+        itzi_cloud_status(argparse.Namespace(ensemble_id="missing"))
 
 
 def test_itzi_cloud_project_displays_project_list(monkeypatch):

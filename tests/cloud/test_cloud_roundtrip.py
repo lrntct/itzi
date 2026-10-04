@@ -59,7 +59,6 @@ class FakeCloudState:
     def __init__(self) -> None:
         self.tokens_by_email: dict[str, str] = {}
         self.email_by_token: dict[str, str] = {}
-        self.simulations: dict[str, dict[str, Any]] = {}
         self.download_headers: dict[str, dict[str, str]] = {}
         self.download_archives: dict[str, bytes] = {}
         self.results_lookup_errors: dict[str, tuple[int, dict[str, Any]]] = {}
@@ -89,6 +88,8 @@ class FakeCloudState:
         self.fail_run: int | None = None
         self.lose_simulation_response = False
         self.lose_run_response = False
+        self.ensemble_simulations: dict[str, list[dict[str, str | int]]] = {}
+        self.status_gets: list[tuple[str, str]] = []
 
 
 class FakeCloudServer(ThreadingHTTPServer):
@@ -265,27 +266,88 @@ class FakeCloudRequestHandler(BaseHTTPRequestHandler):
         if path.startswith("/execution-api/v1/inputs/"):
             if not self._require_token():
                 return
+            self.server.state.status_gets.append((path, self.headers.get("X-Session-Token", "")))
             input_id = path.removeprefix("/execution-api/v1/inputs/")
             confirmed = self.server.state.confirmed.get(input_id)
             self._send_json(
                 200,
                 {
+                    "project_id": "project-id",
+                    "ensemble_id": input_id.replace("input-", "ensemble-"),
                     "input_id": input_id,
-                    "state": (self.server.state.validation_state or "accepted")
-                    if confirmed
-                    else "draft",
+                    "state": self.server.state.validation_state
+                    or ("accepted" if confirmed else "draft"),
+                    "state_changed_at": "2026-10-01T12:00:00+00:00",
+                    "input_storage": {
+                        "reserved_bytes": 0 if confirmed else 100,
+                        "accepted_bytes": confirmed["size_bytes"] if confirmed else 0,
+                    },
+                    "account_storage": {
+                        "entitlement_bytes": 1000,
+                        "reserved_bytes": 100,
+                        "accepted_bytes": confirmed["size_bytes"] if confirmed else 0,
+                        "available_bytes": 900 - (confirmed["size_bytes"] if confirmed else 0),
+                    },
                     "upload_confirmation": (
                         {"size_bytes": confirmed["size_bytes"], "sha256": confirmed["sha256"]}
                         if confirmed
                         else None
                     ),
                     "failure": (
-                        {"message": "Archive rejected", "next_action": "fix the archive"}
+                        {
+                            "kind": "validation",
+                            "code": "invalid_archive",
+                            "message": "Archive rejected",
+                            "next_action": "fix the archive",
+                            "internal_traceback": "private traceback must not be displayed",
+                        }
                         if confirmed and self.server.state.validation_state == "failed"
                         else None
                     ),
                     "acceptance": (
                         {
+                            "contract_revision": "precipient-itzi-input-v1",
+                            "accepted_at": "2026-10-01T12:00:00+00:00",
+                            "crs": {"wkt": 'LOCAL_CS["metre grid"]'},
+                            "extent": {
+                                "minimum_x": 0,
+                                "minimum_y": 0,
+                                "maximum_x": 50,
+                                "maximum_y": 50,
+                            },
+                            "variable_inventory": {
+                                "variables": [
+                                    {
+                                        "name": "dem",
+                                        "dtype": "float32",
+                                        "dimensions": ["y", "x"],
+                                        "shape": [5, 5],
+                                        "member_scope": "shared",
+                                    }
+                                ]
+                            },
+                            "coordinate_summaries": [
+                                {
+                                    "name": "x",
+                                    "axis": "x",
+                                    "dtype": "float64",
+                                    "size": 5,
+                                    "first": 5,
+                                    "last": 45,
+                                    "resolution": 10,
+                                    "unit": "m",
+                                }
+                            ],
+                            "time_coverage": [
+                                {
+                                    "coordinate_name": "rain_time",
+                                    "start": 0,
+                                    "end": 600,
+                                    "unit": "s",
+                                }
+                            ],
+                            "supported_metadata": {"zarr_format": 3, "temporal_type": "relative"},
+                            "repository_locator": "private repository must not be displayed",
                             "member_mapping": {
                                 "members": [
                                     {"index": index, "label": label}
@@ -293,7 +355,7 @@ class FakeCloudRequestHandler(BaseHTTPRequestHandler):
                                         self.server.state.member_labels.get(input_id, ["member-0"])
                                     )
                                 ]
-                            }
+                            },
                         }
                         if confirmed and self.server.state.validation_state in (None, "accepted")
                         else None
@@ -301,19 +363,21 @@ class FakeCloudRequestHandler(BaseHTTPRequestHandler):
                 },
             )
             return
+        if path.startswith("/execution-api/v1/ensembles/") and path.endswith("/simulations"):
+            if not self._require_token():
+                return
+            self.server.state.status_gets.append((path, self.headers.get("X-Session-Token", "")))
+            ensemble_id = path.removeprefix("/execution-api/v1/ensembles/").removesuffix(
+                "/simulations"
+            )
+            self._send_json(200, self.server.state.ensemble_simulations.get(ensemble_id, []))
+            return
         if path == "/_allauth/app/v1/auth/session":
             token = self.headers.get("X-Session-Token")
             if token in self.server.state.email_by_token:
                 self._send_json(200, {"meta": {"is_authenticated": True}})
             else:
                 self._send_json(401, {"meta": {"is_authenticated": False}})
-            return
-
-        if path == "/itzi-api/simulations":
-            if not self._require_token():
-                return
-            tasks = list(self.server.state.simulations.values())
-            self._send_json(200, tasks)
             return
 
         fingerprint = self._match_simulation_subresource(path, "results")
@@ -335,17 +399,6 @@ class FakeCloudRequestHandler(BaseHTTPRequestHandler):
                     "download_expires_at": (datetime.now(UTC) + timedelta(minutes=15)).isoformat(),
                 },
             )
-            return
-
-        if path.startswith("/itzi-api/simulations/"):
-            if not self._require_token():
-                return
-            fingerprint = path.removeprefix("/itzi-api/simulations/")
-            task = self.server.state.simulations.get(fingerprint)
-            if task is None:
-                self._send_json(404, {"detail": "Simulation not found"})
-                return
-            self._send_json(200, task)
             return
 
         if path.startswith("/downloads/"):
@@ -511,18 +564,6 @@ def _configure_cloud_test_environment(
         {"metadata.json": b'{"fingerprint": "fp-001"}', "summary.txt": b"synthetic results"},
     )
     fake_cloud_server.state.download_archives["fp-001"] = archive
-    now = datetime.now(UTC).isoformat()
-    fake_cloud_server.state.simulations["fp-001"] = {
-        "team": "integration-tests",
-        "project_slug": "test-project",
-        "created_on": now,
-        "last_updated": now,
-        "fingerprint": "fp-001",
-        "status": "completed",
-        "progress": 1000,
-        "input_bytes": 0,
-        "results_bytes": len(archive),
-    }
     metadata_storage.save_simulation_metadata(
         "fp-001", "user@example.com", "sim.yaml", grass_params
     )
@@ -596,11 +637,25 @@ def test_cloud_login_status_pull_with_fake_provider(
         "mapset": "mapset",
         "grass_bin": None,
     }
-    itzi_cloud_status(argparse.Namespace(fingerprint=None))
-    itzi_cloud_status(argparse.Namespace(fingerprint="fp-001"))
+    ctx.metadata_storage.save_ensemble_draft(
+        ctx.metadata_storage.EnsembleDraft(
+            email="user@example.com",
+            project_id="project-id",
+            member_labels=("member-0",),
+            grass_params=ctx.grass_params,
+            archive_sha256="a" * 64,
+            yaml_sha256="b" * 64,
+            idempotency_key="status-key",
+            ensemble_id="ensemble-1",
+            input_id="input-1",
+        )
+    )
+    itzi_cloud_status(argparse.Namespace(ensemble_id=None))
+    itzi_cloud_status(argparse.Namespace(ensemble_id="ensemble-1"))
 
-    assert any("FINGERPRINT" in message for message in status_messages)
-    assert any("fp-001" in message and "completed" in message for message in status_messages)
+    assert any("Ensemble: ensemble-1" in message for message in status_messages)
+    assert any("Input: input-1; state: draft" in message for message in status_messages)
+    assert not any("completed" in message or "PROGRESS" in message for message in status_messages)
 
     itzi_cloud_pull(
         argparse.Namespace(
@@ -620,6 +675,89 @@ def test_cloud_login_status_pull_with_fake_provider(
     assert fake_cloud_server.state.download_headers["fp-001"] == {
         "x-download-token": "download-123"
     }
+
+
+@pytest.mark.cloud
+@pytest.mark.parametrize("input_state", ["uploading", "validating", "accepted", "failed"])
+def test_cloud_status_reports_input_facts_and_recorded_runs(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    fake_cloud_server: FakeCloudServer,
+    input_state: str,
+) -> None:
+    from itzi.cloud import status
+    from itzi.cloud.metadata_storage import EnsembleDraft
+
+    ctx = _configure_cloud_test_environment(monkeypatch, tmp_path, fake_cloud_server)
+    itzi_cloud_login(
+        argparse.Namespace(email="user@example.com", password="secret", logout=False, status=False)
+    )
+    draft = EnsembleDraft(
+        email="user@example.com",
+        project_id="project-id",
+        member_labels=("rain-a", "rain-b"),
+        grass_params=ctx.grass_params,
+        archive_sha256="a" * 64,
+        yaml_sha256="b" * 64,
+        idempotency_key="status-key",
+        ensemble_id="ensemble-1",
+        input_id="input-1",
+        upload_stage="confirmed" if input_state != "uploading" else "uploaded",
+        simulation_ids={0: "simulation-0"} if input_state == "accepted" else {},
+        run_ids={0: "run-0"} if input_state == "accepted" else {},
+    )
+    ctx.metadata_storage.save_ensemble_draft(draft)
+    state = fake_cloud_server.state
+    state.member_labels["input-1"] = list(draft.member_labels)
+    state.validation_state = input_state
+    if input_state != "uploading":
+        state.confirmed["input-1"] = {"size_bytes": 42, "sha256": "a" * 64}
+    if input_state == "accepted":
+        state.ensemble_simulations["ensemble-1"] = [
+            {
+                "ensemble_id": "ensemble-1",
+                "input_id": "input-1",
+                "simulation_id": "simulation-0",
+                "member_index": 0,
+                "member_label": "rain-a",
+            }
+        ]
+    messages: list[str] = []
+    monkeypatch.setattr(status.msgr, "message", messages.append)
+    before = ctx.metadata_storage.get_metadata_file_path().read_bytes()
+
+    itzi_cloud_status(argparse.Namespace(ensemble_id="ensemble-1"))
+
+    assert state.status_gets == [
+        ("/execution-api/v1/inputs/input-1", "token-1"),
+        ("/execution-api/v1/ensembles/ensemble-1/simulations", "token-1"),
+    ]
+    assert ctx.metadata_storage.get_metadata_file_path().read_bytes() == before
+    text = "\n".join(messages)
+    assert f"Input: input-1; state: {input_state}" in text
+    assert "Input storage (bytes):" in text
+    assert "Account storage (bytes): entitlement=1000" in text
+    assert "RECORDED RUN ID" in text
+    assert "rain-a" in text and "rain-b" in text
+    assert "execution state is unavailable" in text
+    assert "PROGRESS" not in text and "completed" not in text
+    assert "private" not in text
+    assert ("Confirmed upload: 42 bytes" in text) == (input_state != "uploading")
+    assert ("Acceptance: precipient-itzi-input-v1" in text) == (input_state == "accepted")
+    if input_state == "accepted":
+        assert "CRS WKT:" in text and "Cell-edge extent:" in text
+        assert "Variable: dem" in text and "Coordinate: x" in text
+        assert "Time coverage: rain_time" in text and "temporal type: relative" in text
+        assert any(
+            "rain-a" in message and "simulation-0" in message and "run-0" in message
+            for message in messages
+        )
+        assert any("rain-b" in message and message.endswith("-") for message in messages)
+    if input_state == "failed":
+        assert "Failure: validation/invalid_archive: Archive rejected" in text
+        assert "Next action: fix the archive" in text
+    if input_state == "uploading":
+        assert "Local upload stage: uploaded" in text
 
 
 @pytest.mark.cloud
@@ -677,7 +815,7 @@ def test_cloud_status_requires_an_active_session(
     fake_cloud_server.state.email_by_token.clear()
 
     with pytest.raises(FatalError, match="Please log in first"):
-        itzi_cloud_status(argparse.Namespace(fingerprint=None))
+        itzi_cloud_status(argparse.Namespace(ensemble_id=None))
 
 
 def _fake_archive(

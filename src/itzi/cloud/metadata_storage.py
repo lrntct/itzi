@@ -95,6 +95,12 @@ def save_ensemble_draft(draft: EnsembleDraft) -> None:
     _write_metadata_file(metadata_file, metadata)
 
 
+def list_ensemble_drafts(email: str) -> tuple[EnsembleDraft, ...]:
+    """Return locally recorded submissions for the authenticated account."""
+    metadata = _load_metadata_file(get_metadata_file_path())
+    return tuple(draft for draft in metadata.ensembles.values() if draft.email == email)
+
+
 def get_or_create_ensemble_draft(
     email: str,
     project_id: str,

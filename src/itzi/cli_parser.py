@@ -53,7 +53,6 @@ def add_cloud_subcommands(cloud_parser: argparse.ArgumentParser) -> None:
         "-p",
         "--project",
         required=True,
-        metavar="PROJECT_ID",
         help="Project ID (from cloud project --list).",
     )
     cloud_push_parser.add_argument(
@@ -68,13 +67,13 @@ def add_cloud_subcommands(cloud_parser: argparse.ArgumentParser) -> None:
     )
 
     cloud_status_parser = cloud_subparser.add_parser(
-        "status", help="Display status of submitted cloud simulations."
+        "status", help="Display Input states and recorded Run IDs for local cloud submissions."
     )
     cloud_status_parser.set_defaults(cloud_handler="status")
     cloud_status_parser.add_argument(
-        "fingerprint",
+        "ensemble_id",
         nargs="?",
-        help="Optional simulation fingerprint to query a specific simulation.",
+        help="Optional locally recorded Ensemble ID; defaults to submissions for this account.",
     )
 
     cloud_project_parser = cloud_subparser.add_parser("project", help="Manage cloud projects.")
