@@ -53,6 +53,7 @@ def add_cloud_subcommands(cloud_parser: argparse.ArgumentParser) -> None:
         "-p",
         "--project",
         required=True,
+        metavar="PROJECT_ID",
         help="Project ID (from cloud project --list).",
     )
     cloud_push_parser.add_argument(
@@ -73,6 +74,7 @@ def add_cloud_subcommands(cloud_parser: argparse.ArgumentParser) -> None:
     cloud_status_parser.add_argument(
         "ensemble_id",
         nargs="?",
+        metavar="ENSEMBLE_ID",
         help="Optional locally recorded Ensemble ID; defaults to submissions for this account.",
     )
 
@@ -87,27 +89,30 @@ def add_cloud_subcommands(cloud_parser: argparse.ArgumentParser) -> None:
     )
 
     cloud_pull_parser = cloud_subparser.add_parser(
-        "pull", help="Pull results from a complete cloud simulation."
+        "pull",
+        help="Download a verified result package for selected cloud Runs.",
+        description=(
+            "Download a verified result package. GRASS import requires a published "
+            "result-package format and is not yet available."
+        ),
     )
     cloud_pull_parser.set_defaults(cloud_handler="pull")
     cloud_pull_parser.add_argument(
-        "fingerprint",
-        help="Simulation fingerprint to download results from.",
+        "ensemble_id",
+        metavar="ENSEMBLE_ID",
+        help="Ensemble ID whose results should be packaged.",
     )
     cloud_pull_parser.add_argument(
-        "--gisdb",
-        help="Override disk location of the GRASS GIS database to load the results into.",
+        "--run-id",
+        action="append",
+        default=[],
+        help="Select a Run ID. Repeat for 1–100 runs; defaults to locally recorded runs.",
     )
     cloud_pull_parser.add_argument(
-        "--project",
-        help="Override name of the GRASS project to load the results into.",
-    )
-    cloud_pull_parser.add_argument(
-        "--mapset",
-        help="Override name of the GRASS mapset to load the results into.",
-    )
-    cloud_pull_parser.add_argument(
-        "-o", dest="overwrite", action="store_true", help="Overwrite files if exist."
+        "-o",
+        "--output",
+        required=True,
+        help="Destination archive file (must not already exist).",
     )
 
 

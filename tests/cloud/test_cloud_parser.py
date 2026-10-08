@@ -86,29 +86,58 @@ def test_cloud_project_parser_requires_an_action():
         build_parser().parse_args(["cloud", "project"])
 
 
-def test_cloud_pull_parser_accepts_overrides_and_overwrite():
+def test_cloud_pull_parser_accepts_run_selection_and_destination() -> None:
     args = build_parser().parse_args(
         [
             "cloud",
             "pull",
-            "fp-123",
-            "--gisdb",
-            "/db",
-            "--project",
-            "loc",
-            "--mapset",
-            "mapset",
+            "ensemble-123",
+            "--run-id",
+            "run-2",
+            "--run-id",
+            "run-1",
             "-o",
+            "results.archive",
         ]
     )
 
     assert args.command == "cloud"
     assert args.cloud_command == "pull"
-    assert args.fingerprint == "fp-123"
-    assert args.gisdb == "/db"
-    assert args.project == "loc"
-    assert args.mapset == "mapset"
-    assert args.overwrite is True
+    assert args.ensemble_id == "ensemble-123"
+    assert args.run_id == ["run-2", "run-1"]
+    assert args.output == "results.archive"
+
+
+def test_cloud_pull_parser_defaults_to_recorded_runs() -> None:
+    args = build_parser().parse_args(
+        ["cloud", "pull", "ensemble-123", "--output", "results.archive"]
+    )
+    assert args.run_id == []
+
+
+@pytest.mark.parametrize("arguments", [[], ["ensemble-123"], ["--output", "results.archive"]])
+def test_cloud_pull_requires_ensemble_and_destination(arguments: list[str]) -> None:
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["cloud", "pull", *arguments])
+
+
+@pytest.mark.parametrize("option", ["--gisdb", "--project", "--mapset", "--overwrite"])
+def test_cloud_pull_rejects_legacy_import_options(option: str) -> None:
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(
+            ["cloud", "pull", "ensemble-123", "--output", "results.archive", option, "value"]
+        )
+
+
+def test_cloud_pull_help_describes_contract_gate(capsys) -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        build_parser().parse_args(["cloud", "pull", "--help"])
+    assert exc_info.value.code == 0
+    text = " ".join(capsys.readouterr().out.split())
+    assert "GRASS import requires a published" in text
+    assert "format and is not yet available" in text
+    assert "--run-id" in text and "--output" in text
+    assert "fingerprint" not in text
 
 
 def test_main_prints_cloud_help_without_subcommand(capsys):
@@ -134,7 +163,7 @@ def test_main_prints_cloud_help_without_subcommand(capsys):
         (["cloud", "push", "-p", "proj-abc123", "sim.yaml"], "itzi_cloud_push"),
         (["cloud", "status"], "itzi_cloud_status"),
         (["cloud", "project", "--list"], "itzi_cloud_project"),
-        (["cloud", "pull", "fp-123"], "itzi_cloud_pull"),
+        (["cloud", "pull", "ensemble-123", "-o", "results.archive"], "itzi_cloud_pull"),
     ],
 )
 def test_main_dispatches_cloud_commands(monkeypatch, argv, expected_handler):

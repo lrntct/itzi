@@ -5,15 +5,13 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
-import io
 import json
-import tarfile
 import threading
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from typing import Any, cast
 from urllib.parse import urlparse
 
@@ -22,23 +20,6 @@ import pytest
 from itzi.cloud.cli import itzi_cloud_login, itzi_cloud_pull, itzi_cloud_push, itzi_cloud_status
 from itzi.grass.session import GrassParams
 from itzi.messenger import FatalError
-
-
-def _build_tar_archive(root_name: str, files: dict[str, bytes]) -> bytes:
-    archive = io.BytesIO()
-    with tarfile.open(fileobj=archive, mode="w:gz") as tar:
-        root_info = tarfile.TarInfo(root_name)
-        root_info.type = tarfile.DIRTYPE
-        root_info.mtime = 0
-        tar.addfile(root_info)
-
-        for relative_path, payload in files.items():
-            file_info = tarfile.TarInfo(f"{root_name}/{relative_path}")
-            file_info.size = len(payload)
-            file_info.mtime = 0
-            tar.addfile(file_info, io.BytesIO(payload))
-
-    return archive.getvalue()
 
 
 class InMemoryKeyring:
@@ -60,8 +41,22 @@ class FakeCloudState:
         self.tokens_by_email: dict[str, str] = {}
         self.email_by_token: dict[str, str] = {}
         self.download_headers: dict[str, dict[str, str]] = {}
-        self.download_archives: dict[str, bytes] = {}
-        self.results_lookup_errors: dict[str, tuple[int, dict[str, Any]]] = {}
+        self.package_archive = b"opaque result package\x00" * 100000
+        self.package_requests: list[tuple[str, dict[str, list[str]], str]] = []
+        self.package_gets: list[tuple[str, str]] = []
+        self.package_states = ["queued", "running", "ready"]
+        self.package_error: tuple[int, dict[str, str]] | None = None
+        self.package_status_error: tuple[int, dict[str, str]] | None = None
+        self.expired_package_urls = 0
+        self.download_denials = 0
+        self.package_artifact_expired = False
+        self.missing_package_download = False
+        self.wrong_package_id = False
+        self.wrong_manifest = False
+        self.package_size_delta = 0
+        self.wrong_package_digest = False
+        self.download_status = 200
+        self.interrupt_download = False
         self.ensemble_creates: list[tuple[str, str, str, bytes]] = []
         self.ensembles_by_key: dict[str, dict[str, str]] = {}
         self.create_conflict = False
@@ -108,6 +103,20 @@ class FakeCloudRequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = urlparse(self.path).path
+        if path.startswith("/execution-api/v1/ensembles/") and path.endswith("/packages"):
+            if not self._require_token():
+                return
+            self.server.state.package_requests.append(
+                (path, self._read_json(), self.headers.get("X-Session-Token", ""))
+            )
+            if self.server.state.package_error is not None:
+                self._send_json(*self.server.state.package_error)
+                return
+            self._send_json(
+                202,
+                {"package_id": "package-1", "state": "queued", "manifest_sha256": "c" * 64},
+            )
+            return
         if path.startswith("/execution-api/v1/simulations/") and path.endswith("/runs"):
             if not self._require_token():
                 return
@@ -263,6 +272,55 @@ class FakeCloudRequestHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         path = urlparse(self.path).path
+        if path.startswith("/execution-api/v1/ensembles/") and "/packages/" in path:
+            if not self._require_token():
+                return
+            state = self.server.state
+            state.package_gets.append((path, self.headers.get("X-Session-Token", "")))
+            if state.package_status_error is not None:
+                self._send_json(*state.package_status_error)
+                return
+            package_state = state.package_states[0]
+            if len(state.package_states) > 1:
+                state.package_states.pop(0)
+            url_expired = state.expired_package_urls > 0
+            state.expired_package_urls = max(0, state.expired_package_urls - 1)
+            now = datetime.now(UTC)
+            self._send_json(
+                200,
+                {
+                    "package_id": "wrong-package" if state.wrong_package_id else "package-1",
+                    "state": package_state,
+                    "manifest_sha256": "d" * 64 if state.wrong_manifest else "c" * 64,
+                    "failure_code": "package_export_failed" if package_state == "failed" else "",
+                    "download": (
+                        {
+                            "method": "GET",
+                            "url": f"{self.server.base_url}/downloads/"
+                            f"package-{len(state.package_gets)}",
+                            "headers": {"x-download-token": "signed-only"},
+                            "url_expires_at": (
+                                now + timedelta(seconds=-10 if url_expired else 900)
+                            ).isoformat(),
+                            "artifact_expires_at": (
+                                now
+                                + timedelta(
+                                    seconds=-10 if state.package_artifact_expired else 3600
+                                )
+                            ).isoformat(),
+                            "size_bytes": len(state.package_archive) + state.package_size_delta,
+                            "archive_sha256": (
+                                "0" * 64
+                                if state.wrong_package_digest
+                                else hashlib.sha256(state.package_archive).hexdigest()
+                            ),
+                        }
+                        if package_state == "ready" and not state.missing_package_download
+                        else None
+                    ),
+                },
+            )
+            return
         if path.startswith("/execution-api/v1/inputs/"):
             if not self._require_token():
                 return
@@ -380,37 +438,32 @@ class FakeCloudRequestHandler(BaseHTTPRequestHandler):
                 self._send_json(401, {"meta": {"is_authenticated": False}})
             return
 
-        fingerprint = self._match_simulation_subresource(path, "results")
-        if fingerprint is not None:
-            if not self._require_token():
-                return
-            if fingerprint in self.server.state.results_lookup_errors:
-                status_code, payload = self.server.state.results_lookup_errors[fingerprint]
-                self._send_json(status_code, payload)
-                return
-            self._send_json(
-                200,
-                {
-                    "fingerprint": fingerprint,
-                    "download_url": f"{self.server.base_url}/downloads/{fingerprint}",
-                    "status": "completed",
-                    "download_method": "GET",
-                    "download_headers": {"x-download-token": "download-123"},
-                    "download_expires_at": (datetime.now(UTC) + timedelta(minutes=15)).isoformat(),
-                },
-            )
-            return
-
         if path.startswith("/downloads/"):
-            fingerprint = path.removeprefix("/downloads/")
-            self.server.state.download_headers[fingerprint] = {
-                "x-download-token": self.headers.get("x-download-token", "")
+            state = self.server.state
+            state.download_headers[path] = {
+                key.lower(): value for key, value in self.headers.items()
             }
-            archive = self.server.state.download_archives.get(fingerprint)
-            if archive is None:
-                self._send_json(404, {"detail": "Results not found"})
+            if state.download_denials > 0:
+                state.download_denials -= 1
+                self._send_json(403, {"detail": "Signed URL expired"})
                 return
-            self._send_bytes(200, archive, content_type="application/gzip")
+            if (
+                self.headers.get("x-download-token") != "signed-only"
+                or "X-Session-Token" in self.headers
+            ):
+                self._send_json(403, {"detail": "Invalid signed headers"})
+                return
+            if state.interrupt_download:
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(state.package_archive)))
+                self.end_headers()
+                self.wfile.write(state.package_archive[: 1024 * 1024 + 17])
+                return
+            self._send_bytes(
+                state.download_status,
+                state.package_archive,
+                content_type="application/octet-stream",
+            )
             return
 
         self._send_json(404, {"detail": f"Unhandled GET {path}"})
@@ -492,13 +545,6 @@ class FakeCloudRequestHandler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: object) -> None:
         return
 
-    def _match_simulation_subresource(self, path: str, suffix: str) -> str | None:
-        prefix = "/itzi-api/simulations/"
-        suffix_text = f"/{suffix}"
-        if path.startswith(prefix) and path.endswith(suffix_text):
-            return path.removeprefix(prefix).removesuffix(suffix_text)
-        return None
-
     def _read_json(self) -> dict[str, Any]:
         content_length = int(self.headers.get("Content-Length", "0"))
         body = self.rfile.read(content_length)
@@ -528,8 +574,8 @@ class FakeCloudRequestHandler(BaseHTTPRequestHandler):
 
 @dataclass(frozen=True)
 class CloudTestContext:
-    metadata_storage: Any
-    pull: Any
+    metadata_storage: ModuleType
+    pull: ModuleType
     grass_params: GrassParams
 
 
@@ -559,11 +605,6 @@ def _configure_cloud_test_environment(
     (grassdata / "project" / "mapset").mkdir(parents=True)
     grass_params = GrassParams(grassdata=str(grassdata), location="project", mapset="mapset")
 
-    archive = _build_tar_archive(
-        "results.zarr",
-        {"metadata.json": b'{"fingerprint": "fp-001"}', "summary.txt": b"synthetic results"},
-    )
-    fake_cloud_server.state.download_archives["fp-001"] = archive
     metadata_storage.save_simulation_metadata(
         "fp-001", "user@example.com", "sim.yaml", grass_params
     )
@@ -600,23 +641,7 @@ def test_cloud_login_status_pull_with_fake_provider(
 
     ctx = _configure_cloud_test_environment(monkeypatch, tmp_path, fake_cloud_server)
 
-    loaded_results: list[dict[str, Any]] = []
-
-    def record_loaded_results(
-        temp_data_path: Path, grass_params: GrassParams, overwrite: bool
-    ) -> None:
-        loaded_results.append(
-            {
-                "path": temp_data_path,
-                "exists": temp_data_path.exists(),
-                "metadata": (temp_data_path / "metadata.json").read_text(),
-                "grass_params": grass_params,
-                "overwrite": overwrite,
-            }
-        )
-
-    monkeypatch.setattr(ctx.pull, "load_to_grass", record_loaded_results)
-
+    monkeypatch.setattr(ctx.pull, "PACKAGE_POLL_SECONDS", 0)
     status_messages: list[str] = []
     monkeypatch.setattr(status.msgr, "message", status_messages.append)
 
@@ -648,6 +673,7 @@ def test_cloud_login_status_pull_with_fake_provider(
             idempotency_key="status-key",
             ensemble_id="ensemble-1",
             input_id="input-1",
+            run_ids={1: "run-1", 0: "run-0"},
         )
     )
     itzi_cloud_status(argparse.Namespace(ensemble_id=None))
@@ -657,24 +683,30 @@ def test_cloud_login_status_pull_with_fake_provider(
     assert any("Input: input-1; state: draft" in message for message in status_messages)
     assert not any("completed" in message or "PROGRESS" in message for message in status_messages)
 
-    itzi_cloud_pull(
-        argparse.Namespace(
-            fingerprint="fp-001",
-            overwrite=True,
-            gisdb=None,
-            project=None,
-            mapset=None,
+    destination = tmp_path / "verified.archive"
+    itzi_cloud_pull(argparse.Namespace(ensemble_id="ensemble-1", run_id=[], output=destination))
+    state = fake_cloud_server.state
+    assert destination.read_bytes() == state.package_archive
+    assert state.package_requests == [
+        (
+            "/execution-api/v1/ensembles/ensemble-1/packages",
+            {"run_ids": ["run-0", "run-1"]},
+            "token-1",
         )
+    ]
+    assert (
+        state.package_gets
+        == [("/execution-api/v1/ensembles/ensemble-1/packages/package-1", "token-1")] * 3
     )
-
-    assert len(loaded_results) == 1
-    assert loaded_results[0]["exists"] is True
-    assert loaded_results[0]["metadata"] == '{"fingerprint": "fp-001"}'
-    assert loaded_results[0]["grass_params"] == ctx.grass_params
-    assert loaded_results[0]["overwrite"] is True
-    assert fake_cloud_server.state.download_headers["fp-001"] == {
-        "x-download-token": "download-123"
-    }
+    assert len(state.download_headers) == 1
+    headers = next(iter(state.download_headers.values()))
+    assert headers["x-download-token"] == "signed-only"
+    assert "x-session-token" not in headers
+    assert sorted(path.name for path in tmp_path.iterdir()) == [
+        "appdata",
+        "grassdb",
+        "verified.archive",
+    ]
 
 
 @pytest.mark.cloud
@@ -766,8 +798,7 @@ def test_cloud_pull_surfaces_api_detail_when_results_are_unavailable(
     tmp_path: Path,
     fake_cloud_server: FakeCloudServer,
 ) -> None:
-    ctx = _configure_cloud_test_environment(monkeypatch, tmp_path, fake_cloud_server)
-    monkeypatch.setattr(ctx.pull, "load_to_grass", lambda *args, **kwargs: pytest.fail())
+    _configure_cloud_test_environment(monkeypatch, tmp_path, fake_cloud_server)
 
     itzi_cloud_login(
         argparse.Namespace(
@@ -777,21 +808,200 @@ def test_cloud_pull_surfaces_api_detail_when_results_are_unavailable(
             status=False,
         )
     )
-    fake_cloud_server.state.results_lookup_errors["fp-001"] = (
+    fake_cloud_server.state.package_error = (
         409,
-        {"detail": "Results are not available yet"},
+        {
+            "detail": "Results are not available yet",
+            "code": "run_not_exportable",
+            "next_action": "select_exportable_runs",
+        },
     )
 
-    with pytest.raises(FatalError, match="Results are not available yet"):
+    with pytest.raises(
+        FatalError, match="Results are not available yet; next action: select_exportable_runs"
+    ):
         itzi_cloud_pull(
             argparse.Namespace(
-                fingerprint="fp-001",
-                overwrite=False,
-                gisdb=None,
-                project=None,
-                mapset=None,
+                ensemble_id="ensemble-1",
+                run_id=["run-0"],
+                output=tmp_path / "results.archive",
             )
         )
+
+
+@pytest.mark.cloud
+@pytest.mark.parametrize("refresh", ["expired_url", "denied_download"])
+def test_cloud_pull_refreshes_signed_url_for_same_package(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    fake_cloud_server: FakeCloudServer,
+    refresh: str,
+) -> None:
+    _configure_cloud_test_environment(monkeypatch, tmp_path, fake_cloud_server)
+    itzi_cloud_login(
+        argparse.Namespace(email="user@example.com", password="secret", logout=False, status=False)
+    )
+    state = fake_cloud_server.state
+    state.package_states = ["ready"]
+    state.expired_package_urls = int(refresh == "expired_url")
+    state.download_denials = int(refresh == "denied_download")
+    destination = tmp_path / "result.archive"
+
+    itzi_cloud_pull(
+        argparse.Namespace(
+            ensemble_id="ensemble-unknown", run_id=["run-2", "run-0"], output=destination
+        )
+    )
+
+    assert destination.read_bytes() == state.package_archive
+    assert state.package_requests == [
+        (
+            "/execution-api/v1/ensembles/ensemble-unknown/packages",
+            {"run_ids": ["run-2", "run-0"]},
+            "token-1",
+        )
+    ]
+    assert len(state.package_gets) == 2
+    assert len(state.download_headers) == (1 if refresh == "expired_url" else 2)
+    assert all(
+        headers["x-download-token"] == "signed-only" and "x-session-token" not in headers
+        for headers in state.download_headers.values()
+    )
+
+
+@pytest.mark.cloud
+@pytest.mark.parametrize(
+    ("failure", "message"),
+    [
+        ("failed", "package_export_failed"),
+        ("queued", "still queued"),
+        ("running", "still running"),
+        ("package_artifact_expired", "artifact is unavailable or expired"),
+        ("missing_package_download", "artifact is unavailable or expired"),
+        ("expired_package_urls", "repeatedly expired or was denied"),
+        ("download_denials", "repeatedly expired or was denied"),
+        ("wrong_package_id", "does not match the requested package manifest"),
+        ("wrong_manifest", "does not match the requested package manifest"),
+        ("too_short", "size mismatch"),
+        ("too_long", "size mismatch"),
+        ("wrong_package_digest", "SHA-256 mismatch"),
+        ("not_found", "artifact is unavailable or expired"),
+        ("gone", "artifact is unavailable or expired"),
+        ("storage_failure", "Signed package download failed"),
+        ("package_status_error", "verify_resource_access"),
+        ("interrupt_download", "IncompleteRead"),
+    ],
+)
+def test_cloud_pull_failures_never_publish_unverified_artifact(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    fake_cloud_server: FakeCloudServer,
+    failure: str,
+    message: str,
+) -> None:
+    ctx = _configure_cloud_test_environment(monkeypatch, tmp_path, fake_cloud_server)
+    itzi_cloud_login(
+        argparse.Namespace(email="user@example.com", password="secret", logout=False, status=False)
+    )
+    monkeypatch.setattr(ctx.pull, "PACKAGE_WAIT_SECONDS", 0)
+    state = fake_cloud_server.state
+    state.package_states = [failure if failure in ("failed", "queued", "running") else "ready"]
+    if failure in ("expired_package_urls", "download_denials"):
+        setattr(state, failure, 3)
+    elif failure in ("too_short", "too_long"):
+        state.package_size_delta = 1 if failure == "too_short" else -1
+    elif failure in ("not_found", "gone", "storage_failure"):
+        state.download_status = {"not_found": 404, "gone": 410, "storage_failure": 503}[failure]
+    elif failure == "package_status_error":
+        state.package_status_error = (
+            404,
+            {
+                "detail": "Package not found",
+                "code": "package_not_found",
+                "next_action": "verify_resource_access",
+            },
+        )
+    elif failure not in ("failed", "queued", "running"):
+        setattr(state, failure, True)
+    destination = tmp_path / "result.archive"
+
+    with pytest.raises(FatalError, match=message):
+        itzi_cloud_pull(
+            argparse.Namespace(ensemble_id="ensemble-1", run_id=["run-0"], output=destination)
+        )
+
+    assert not destination.exists()
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["appdata", "grassdb"]
+    assert len(state.package_requests) == 1
+
+
+@pytest.mark.cloud
+def test_cloud_pull_preserves_existing_destination(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    fake_cloud_server: FakeCloudServer,
+) -> None:
+    _configure_cloud_test_environment(monkeypatch, tmp_path, fake_cloud_server)
+    itzi_cloud_login(
+        argparse.Namespace(email="user@example.com", password="secret", logout=False, status=False)
+    )
+    destination = tmp_path / "result.archive"
+    destination.write_bytes(b"existing user file")
+
+    with pytest.raises(FatalError, match="Destination already exists"):
+        itzi_cloud_pull(
+            argparse.Namespace(ensemble_id="ensemble-1", run_id=["run-0"], output=destination)
+        )
+
+    assert destination.read_bytes() == b"existing user file"
+    assert fake_cloud_server.state.package_requests == []
+
+
+@pytest.mark.cloud
+@pytest.mark.parametrize("selection", ["missing", "other_account", "too_many", "maximum"])
+def test_cloud_pull_checks_selection_before_requesting_package(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    fake_cloud_server: FakeCloudServer,
+    selection: str,
+) -> None:
+    ctx = _configure_cloud_test_environment(monkeypatch, tmp_path, fake_cloud_server)
+    itzi_cloud_login(
+        argparse.Namespace(email="user@example.com", password="secret", logout=False, status=False)
+    )
+    ctx.metadata_storage.save_ensemble_draft(
+        ctx.metadata_storage.EnsembleDraft(
+            email="other@example.com",
+            project_id="project-id",
+            member_labels=("member-0",),
+            grass_params=ctx.grass_params,
+            archive_sha256="a" * 64,
+            yaml_sha256="b" * 64,
+            idempotency_key="other-key",
+            ensemble_id="other-ensemble",
+            run_ids={0: "other-run"},
+        )
+    )
+    runs = [f"run-{index}" for index in range(101 if selection == "too_many" else 100)]
+    if selection in ("missing", "other_account"):
+        runs = []
+    state = fake_cloud_server.state
+    state.package_states = ["ready"]
+    destination = tmp_path / "result.archive"
+    args = argparse.Namespace(
+        ensemble_id="other-ensemble" if selection == "other_account" else "unknown-ensemble",
+        run_id=runs,
+        output=destination,
+    )
+    if selection == "maximum":
+        itzi_cloud_pull(args)
+        assert state.package_requests[0][1] == {"run_ids": runs}
+        assert destination.read_bytes() == state.package_archive
+    else:
+        with pytest.raises(FatalError):
+            itzi_cloud_pull(args)
+        assert not destination.exists()
+        assert state.package_requests == []
 
 
 @pytest.mark.cloud

@@ -16,13 +16,10 @@ from __future__ import annotations
 
 import argparse
 import os
-from typing import TYPE_CHECKING
+from pathlib import Path
 
 import itzi.messenger as msgr
 from itzi.messenger import VerbosityLevel
-
-if TYPE_CHECKING:
-    from itzi.grass.session import GrassParams
 
 
 def itzi_cloud_login(cli_args) -> None:
@@ -128,81 +125,25 @@ def itzi_cloud_project(cli_args: argparse.Namespace) -> None:
     display_projects_list(projects)
 
 
-def resolve_cloud_pull_grass_params(cli_args: argparse.Namespace) -> tuple[GrassParams, str]:
-    """Resolve where cloud pull should load results in GRASS."""
-    from itzi.cloud.grass_utils import get_active_grass_params
-    from itzi.cloud.metadata_storage import load_simulation_metadata
-    from itzi.grass.session import GrassParams
+def itzi_cloud_pull(cli_args: argparse.Namespace) -> None:
+    """Request and download a verified result package for an Ensemble's Runs."""
+    import requests
 
-    # 1. Active GRASS Session (highest priority)
-    session_params = get_active_grass_params()
-    if session_params is not None:
-        msgr.debug("Using GRASS parameters from active session")
-        return session_params, "active GRASS session"
-
-    # 2. CLI Arguments (explicit user override)
-    if cli_args.gisdb or cli_args.project or cli_args.mapset:
-        # All three must be provided if any are
-        if not all([cli_args.gisdb, cli_args.project, cli_args.mapset]):
-            msgr.fatal(
-                "When specifying GRASS parameters via CLI, all three are required: "
-                "--gisdb, --project, and --mapset"
-            )
-
-        msgr.debug("Using GRASS parameters from CLI arguments")
-        return GrassParams(
-            grassdata=cli_args.gisdb,
-            location=cli_args.project,
-            mapset=cli_args.mapset,
-            region=None,
-            mask=None,
-            grass_bin=None,
-        ), "CLI arguments"
-
-    # 3. Stored Metadata
-    metadata_params = load_simulation_metadata(cli_args.fingerprint)
-    if metadata_params is not None:
-        msgr.debug("Using GRASS parameters from stored metadata")
-        return metadata_params, "stored metadata"
-
-    # 4. Error if none available
-    msgr.fatal(
-        "Could not determine GRASS parameters for loading results.\n"
-        "Please either:\n"
-        "  1. Run this command from within a GRASS session, or\n"
-        "  2. Specify parameters explicitly: --gisdb <path> --project <name> --mapset <name>\n"
-        f"No metadata found for simulation {cli_args.fingerprint}"
-    )
-
-
-def itzi_cloud_pull(cli_args) -> None:
-    """Retrieve results from the cloud and insert them in the GRASS DB."""
     from itzi.cloud.auth import check_login, get_token
-    from itzi.cloud.pull import get_simulation_results_url, pull_simulation_results
+    from itzi.cloud.pull import pull_result_package
 
     os.environ["ITZI_VERBOSE"] = str(VerbosityLevel.MESSAGE)
 
     email = check_login()
 
-    msgr.message(f"Retrieving results for simulation {cli_args.fingerprint}...")
-
-    grass_params, source_description = resolve_cloud_pull_grass_params(cli_args)
-
-    msgr.message(f"Loading results to GRASS database using {source_description}")
-    msgr.verbose(
-        f"  Location: {grass_params.grassdata}/{grass_params.location}/{grass_params.mapset}"
-    )
-
-    # Get download information
-    results_info = get_simulation_results_url(
-        session_token=get_token(email), fingerprint=cli_args.fingerprint
-    )
-
-    # Pull and load the results
-    pull_simulation_results(
-        download_url=results_info.download_url,
-        grass_params=grass_params,
-        overwrite=cli_args.overwrite,
-        download_method=results_info.download_method,
-        download_headers=results_info.download_headers,
-    )
+    try:
+        path = pull_result_package(
+            session_token=get_token(email),
+            email=email,
+            ensemble_id=cli_args.ensemble_id,
+            run_ids=tuple(cli_args.run_id),
+            destination=Path(cli_args.output),
+        )
+    except (requests.RequestException, ValueError, OSError) as error:
+        msgr.fatal(f"Cloud pull failed: {error}")
+    msgr.message(f"Verified result package saved to {path}")

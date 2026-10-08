@@ -61,6 +61,14 @@ def get_runs_endpoint(simulation_id: str) -> str:
     return f"{get_execution_api_base()}/simulations/{quote(simulation_id, safe='')}/runs"
 
 
+def get_packages_endpoint(ensemble_id: str) -> str:
+    return f"{get_execution_api_base()}/ensembles/{quote(ensemble_id, safe='')}/packages"
+
+
+def get_package_endpoint(ensemble_id: str, package_id: str) -> str:
+    return f"{get_packages_endpoint(ensemble_id)}/{quote(package_id, safe='')}"
+
+
 # Backward-compatible module attributes for callers that only need the default values.
 API_BASE = get_api_base()
 LOGIN_ENDPOINT = get_login_endpoint()

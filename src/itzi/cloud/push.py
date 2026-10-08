@@ -37,7 +37,7 @@ from itzi.cloud.schemas import (
     InputConfirmationSchema,
     InputUploadInstructionSchema,
     InputUploadStatusSchema,
-    RunRequestErrorResponseSchema,
+    RequestErrorResponseSchema,
     RunResponseSchema,
     SimulationResponseSchema,
 )
@@ -301,7 +301,7 @@ def _request_run(
         if response.status_code == 409:
             failure = None
             try:
-                failure = RunRequestErrorResponseSchema.model_validate(response.json())
+                failure = RequestErrorResponseSchema.model_validate(response.json())
             except ValueError:
                 pass
             if (

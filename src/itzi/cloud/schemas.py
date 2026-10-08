@@ -15,20 +15,37 @@ GNU General Public License for more details.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import AliasPath, BaseModel, Field
+from pydantic import AliasPath, AwareDatetime, BaseModel, Field
 
 
-class ResultsDownloadResponseSchema(BaseModel):
-    """Schema containing instructions for downloading simulation results."""
+class PackageRequestSchema(BaseModel):
+    run_ids: tuple[Annotated[str, Field(min_length=1)], ...] = Field(min_length=1, max_length=100)
 
-    fingerprint: str
-    download_url: str
-    status: str
-    download_method: str = "GET"
-    download_headers: dict[str, str] = Field(default_factory=dict)
-    download_expires_at: datetime | None = None
+
+class PackageRequestResponseSchema(BaseModel):
+    package_id: str = Field(min_length=1)
+    state: Literal["queued"] = "queued"
+    manifest_sha256: str
+
+
+class PackageDownloadSchema(BaseModel):
+    method: Literal["GET"]
+    url: str
+    headers: dict[str, str]
+    url_expires_at: AwareDatetime
+    artifact_expires_at: AwareDatetime
+    size_bytes: int = Field(ge=0)
+    archive_sha256: str = Field(pattern=r"^[0-9a-fA-F]{64}$")
+
+
+class PackageStatusResponseSchema(BaseModel):
+    package_id: str
+    state: Literal["queued", "running", "ready", "failed"]
+    manifest_sha256: str
+    failure_code: Literal["", "package_export_failed"] = ""
+    download: PackageDownloadSchema | None = None
 
 
 class TeamSchema(BaseModel):
@@ -180,7 +197,7 @@ class RunResponseSchema(BaseModel):
     simulation_id: str
 
 
-class RunRequestErrorResponseSchema(BaseModel):
+class RequestErrorResponseSchema(BaseModel):
     detail: str
     code: str
     next_action: str
