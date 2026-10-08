@@ -114,12 +114,13 @@ outputs:
         tar.extractall(config.parent / "masked-extracted", filter="data")
     ds = xr.open_zarr(config.parent / "masked-extracted" / "input.zarr", consolidated=False)
     assert CRS.from_wkt(ds.attrs["crs_wkt"]).is_engineering
-    roles = list(simulations[0].simulation_config.input_map_names)
-    assert len(ds.data_vars) < len(simulations) * len(roles)
-    ground = ds[f"source_{roles.index('ground_elevation')}"].values
+    assert len(ds.data_vars) < len(simulations) * len(
+        simulations[0].simulation_config.input_map_names
+    )
+    ground = ds["raster_z_in_5by5"].values
     assert np.isnan(ground[:, 0]).all()
     assert np.isfinite(ground[:, -1]).all()  # Active MASK is not the explicit mask.
-    rainfall = ds[f"source_{roles.index('rainfall_rate')}"].values
+    rainfall = ds["strds_cloud_series_in_5by5"].values
     assert rainfall.shape == (3, 5, 5)
     assert np.isnan(rainfall[:, :, 0]).all()
     assert np.isfinite(rainfall[:, :, -1]).all()

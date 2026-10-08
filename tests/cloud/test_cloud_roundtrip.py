@@ -1661,8 +1661,8 @@ def test_cloud_output_time_and_member_configuration(
     )
     puts = fake_cloud_server.state.simulation_puts
     assert [item[2]["configuration"]["input_map_names"] for item in puts] == [
-        {"ground_elevation": "source_0", "friction": "source_1"},
-        {"ground_elevation": "source_2", "friction": "source_1"},
+        {"ground_elevation": "raster_dem_0_in_mapset", "friction": "raster_n_in_mapset"},
+        {"ground_elevation": "raster_dem_1_in_mapset", "friction": "raster_n_in_mapset"},
     ]
     for _, _, payload, token in puts:
         assert token == "token-1"

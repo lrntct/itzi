@@ -255,12 +255,25 @@ def _warn_omissions(ensemble: ExpandedEnsemble) -> None:
 
 
 def source_names(simulations: tuple[ResolvedSimulation, ...]) -> dict[tuple[str, str], str]:
-    """Assign archive variable names in the same order used by the Zarr writer."""
+    """Give each distinct GRASS source a readable, unique archive variable name."""
     sources: dict[tuple[str, str], str] = {}
+    used_names: set[str] = set()
     for sim in simulations:
         kinds = dict(sim.input_kinds)
         for role, identifier in sim.simulation_config.input_map_names.items():
-            sources.setdefault((identifier, kinds[role]), f"source_{len(sources)}")
+            kind = kinds[role]
+            key = (identifier, kind)
+            if key in sources:
+                continue
+            readable_id = identifier.replace(" ", "_").replace("@", "_in_")
+            for underscores in range(1, 5):
+                name = f"{kind}{'_' * underscores}{readable_id}"
+                if name not in used_names:
+                    sources[key] = name
+                    used_names.add(name)
+                    break
+            else:
+                raise ValueError(f"Cannot assign unique archive name for {identifier} ({kind})")
     return sources
 
 

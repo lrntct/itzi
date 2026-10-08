@@ -9,12 +9,14 @@ import warnings
 from contextlib import contextmanager, nullcontext
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 import pytest
 from itzi_core.const import TemporalType
 from itzi_core.data_containers import SimulationConfig, SurfaceFlowParameters
 
+from itzi.ensemble.models import ResolvedSimulation
 from itzi.grass.session import GrassParams
 
 LOCAL_CRS_WKT = (
@@ -22,6 +24,65 @@ LOCAL_CRS_WKT = (
     'CS[Cartesian,2],AXIS["x",east,ORDER[1],LENGTHUNIT["metre",1]],'
     'AXIS["y",north,ORDER[2],LENGTHUNIT["metre",1]]]'
 )
+
+
+def test_source_names_are_readable_and_reuse_sources() -> None:
+    from itzi.cloud.archive import source_names
+
+    sim = types.SimpleNamespace(
+        input_kinds=(
+            ("rainfall_rate", "strds"),
+            ("other_rain", "strds"),
+            ("rain_raster", "raster"),
+            ("spaced", "raster"),
+        ),
+        simulation_config=types.SimpleNamespace(
+            input_map_names={
+                "rainfall_rate": "rainfall_rate@rain_radar",
+                "other_rain": "rainfall_rate@rain_radar",
+                "rain_raster": "rainfall_rate@rain_radar",
+                "spaced": "odd name@mapset",
+            }
+        ),
+    )
+    assert source_names((cast(ResolvedSimulation, sim),)) == {
+        ("rainfall_rate@rain_radar", "strds"): "strds_rainfall_rate_in_rain_radar",
+        ("rainfall_rate@rain_radar", "raster"): "raster_rainfall_rate_in_rain_radar",
+        ("odd name@mapset", "raster"): "raster_odd_name_in_mapset",
+    }
+
+
+def test_source_names_resolve_up_to_three_collisions() -> None:
+    from itzi.cloud.archive import source_names
+
+    identifiers = (
+        "a@b_in_c_in_d_in_e_in_f",
+        "a_in_b@c_in_d_in_e_in_f",
+        "a_in_b_in_c@d_in_e_in_f",
+        "a_in_b_in_c_in_d@e_in_f",
+        "a_in_b_in_c_in_d_in_e@f",
+    )
+
+    def sim(count: int) -> ResolvedSimulation:
+        return cast(
+            ResolvedSimulation,
+            types.SimpleNamespace(
+                input_kinds=tuple((str(index), "raster") for index in range(count)),
+                simulation_config=types.SimpleNamespace(
+                    input_map_names={
+                        str(index): identifier
+                        for index, identifier in enumerate(identifiers[:count])
+                    }
+                ),
+            ),
+        )
+
+    assert source_names((sim(4),)) == {
+        (identifier, "raster"): f"raster{'_' * (index + 1)}a_in_b_in_c_in_d_in_e_in_f"
+        for index, identifier in enumerate(identifiers[:4])
+    }
+    with pytest.raises(ValueError, match="Cannot assign unique archive name"):
+        source_names((sim(5),))
 
 
 @pytest.mark.parametrize(
@@ -203,7 +264,7 @@ def test_absolute_archive_times_match_output_instants(
             expected = np.array(
                 [np.datetime64(utc_start) + np.timedelta64(hour, "h") for hour in range(3)]
             )
-            np.testing.assert_array_equal(stored.time_source_0.values, expected)
+            np.testing.assert_array_equal(stored.time_strds_rain_in_mapset.values, expected)
 
             member = types.SimpleNamespace(
                 time=normalized, outputs=types.SimpleNamespace(raster_variables=("water_depth",))
@@ -369,21 +430,30 @@ def test_two_member_input_archive(monkeypatch: pytest.MonkeyPatch, tmp_path: Pat
     np.testing.assert_array_equal(ds.member, [0, 1])
     np.testing.assert_array_equal(ds.member_label, ["sim-0", "sim-1"])
     assert ds.member_label.dtype.kind == "U"
-    assert set(ds.data_vars) == {"source_0", "source_1", "source_2", "source_3"}
-    assert ds.source_2.sizes["time_source_2"] == 3
-    assert ds.source_3.sizes["time_source_3"] == 4
+    assert set(ds.data_vars) == {
+        "raster_dem_in_mapset",
+        "raster_n_in_mapset",
+        "strds_rain_a_in_mapset",
+        "strds_rain_b_in_mapset",
+    }
+    assert ds.strds_rain_a_in_mapset.sizes["time_strds_rain_a_in_mapset"] == 3
+    assert ds.strds_rain_b_in_mapset.sizes["time_strds_rain_b_in_mapset"] == 4
     np.testing.assert_array_equal(
-        ds.time_source_3.values, np.array([0, 180, 360, 540], dtype="timedelta64[s]")
+        ds.time_strds_rain_b_in_mapset.values,
+        np.array([0, 180, 360, 540], dtype="timedelta64[s]"),
     )
-    assert ds.source_2.values[0, 0, 0] == 1
-    assert ds.source_3.values[0, 0, 0] == 2
-    assert ds.attrs["itzi_dimension_names"]["source_3"]["time"] == "time_source_3"
+    assert ds.strds_rain_a_in_mapset.values[0, 0, 0] == 1
+    assert ds.strds_rain_b_in_mapset.values[0, 0, 0] == 2
+    assert (
+        ds.attrs["itzi_dimension_names"]["strds_rain_b_in_mapset"]["time"]
+        == "time_strds_rain_b_in_mapset"
+    )
     assert ds.x.values[0] == 5 and ds.y.values[0] == 45
     for name in ds.variables:
         metadata = zarr.open_array(tmp_path / "extracted" / "input.zarr" / name, mode="r")
         assert [codec.to_dict()["name"] for codec in metadata.metadata.codecs] == ["bytes", "zstd"]
         assert metadata.metadata.codecs[0].to_dict()["configuration"]["endian"] == "little"
-        if name in {"source_2", "source_3"}:
+        if name in {"strds_rain_a_in_mapset", "strds_rain_b_in_mapset"}:
             assert metadata.chunks[0] == 1
 
     to_zarr = xr.Dataset.to_zarr
