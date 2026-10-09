@@ -1038,6 +1038,7 @@ def _fake_archive(
     time: dict[str, str] | None = None,
     outputs: dict[str, Any] | None = None,
     yaml_sha256: str | None = None,
+    description: str | None = None,
 ) -> SimpleNamespace:
     from itzi_core import SurfaceFlowParameters
 
@@ -1054,7 +1055,7 @@ def _fake_archive(
         YamlEnsembleDocumentV1.model_validate(
             {
                 "schema_version": 1,
-                "ensemble": {"id": f"study-{document_index}"},
+                "ensemble": {"id": f"study-{document_index}", "description": description},
                 "grass": {},
                 "time": time or {"duration": "00:10:00", "record_step": "00:05:00"},
                 "input": {"ground_elevation": "dem", "friction": "n"},
@@ -1067,6 +1068,8 @@ def _fake_archive(
     return SimpleNamespace(
         ensemble=SimpleNamespace(
             source=ensemble.source,
+            ensemble_id=ensemble.ensemble_id,
+            ensemble_description=ensemble.ensemble_description,
             simulations=(expanded,) * members,
         ),
         simulations=tuple(
@@ -1113,6 +1116,7 @@ def test_cloud_push_creates_and_resumes_each_document(
             ctx.grass_params,
             document_index=index,
             members=2,
+            description="Flood study" if index == 1 else None,
         )
         for index in range(2)
     )
@@ -1148,10 +1152,11 @@ def test_cloud_push_creates_and_resumes_each_document(
         key for _, key, _ in fake_cloud_server.state.run_requests
     ]
     assert len(keys) == len(set(keys))
-    assert all(
-        call[2] == "token-1" and call[3] == b""
-        for call in fake_cloud_server.state.ensemble_creates
-    )
+    assert all(call[2] == "token-1" for call in fake_cloud_server.state.ensemble_creates)
+    assert [json.loads(call[3]) for call in fake_cloud_server.state.ensemble_creates] == [
+        {"name": "study-0", "description": ""},
+        {"name": "study-1", "description": "Flood study"},
+    ]
     assert [body for _, body, _ in fake_cloud_server.state.uploads] == list(payloads)
     assert [item[1] for item in fake_cloud_server.state.upload_instruction_requests] == [
         {
@@ -1301,6 +1306,9 @@ def test_cloud_push_retries_with_same_idempotency_key(
     state.create_conflict = False
     itzi_cloud_push(args)
     assert [call[1] for call in state.ensemble_creates] == [pending["idempotency_key"]] * 2
+    assert [json.loads(call[3]) for call in state.ensemble_creates] == [
+        {"name": "study-0", "description": ""}
+    ] * 2
     assert len(state.ensembles_by_key) == 1
     resumed = next(iter(json.loads(metadata_path.read_text())["ensembles"].values()))
     assert (resumed["ensemble_id"], resumed["input_id"]) == ("ensemble-1", "input-1")

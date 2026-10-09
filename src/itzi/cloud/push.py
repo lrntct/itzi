@@ -71,10 +71,16 @@ def create_ensemble(
     response = requests.post(
         urls.get_ensembles_endpoint(project_id),
         headers={"X-Session-Token": session_token, "Idempotency-Key": draft.idempotency_key},
+        json={
+            "name": archive.ensemble.ensemble_id,
+            "description": archive.ensemble.ensemble_description or "",
+        },
         timeout=30,
     )
     if response.status_code == 409:
         raise ValueError(f"Ensemble creation conflict: {response.json()['detail']}")
+    if response.status_code == 422:
+        raise ValueError(f"Invalid Ensemble metadata: {response.json()['detail']}")
     response.raise_for_status()
     created = EnsembleInputResponseSchema.model_validate(response.json())
     draft = draft.model_copy(
