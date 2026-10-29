@@ -1,9 +1,7 @@
 """Smoke-test cloud packaging against the current GRASS interfaces."""
 
 import tarfile
-from concurrent.futures import ProcessPoolExecutor
 from dataclasses import replace
-from multiprocessing import get_context
 from pathlib import Path
 
 import grass.script as gscript
@@ -66,8 +64,7 @@ outputs:
         replace(member, drainage=None, outputs=OutputTemplates(None, (), None, None))
         for member in ensemble.simulations
     )
-    with ProcessPoolExecutor(max_workers=1, mp_context=get_context("spawn")) as executor:
-        results = executor.submit(resolve_ensemble, cloud_members).result()
+    results = resolve_ensemble(cloud_members)
     assert all(isinstance(result, ResolvedSimulation) for result in results), results
     simulations = tuple(result for result in results if isinstance(result, ResolvedSimulation))
     assert simulations[0].domain_data.crs_wkt.strip() == "XY location (unprojected)"

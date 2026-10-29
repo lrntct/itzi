@@ -402,7 +402,7 @@ outputs:
     itzi_run(args)
 
     worker_pids = {int(path.name) for path in pid_directory.iterdir()}
-    assert worker_pids
+    assert 0 < len(worker_pids) <= 5
     assert os.getpid() not in worker_pids
     assert {key: os.environ.get(key) for key in previous} == previous
     assert Path(os.environ["GISRC"]).read_bytes() == gisrc_contents
@@ -477,8 +477,10 @@ def test_failed_ensemble_member_registers_partial_maps(tmp_path: Path) -> None:
     assert [row["id"] for row in stds.get_registered_maps(columns="id")] == [record_id]
 
 
-@pytest.mark.usefixtures("grass_5by5")
-def test_explicit_grass_context_runs_two_members_without_parent_session(test_data_temp_path):
+@pytest.mark.usefixtures("grass_5by5", "ensemble_in_process")
+def test_explicit_grass_context_runs_two_members_without_parent_session(
+    test_data_temp_path: str,
+) -> None:
     context = gscript.gisenv()
     config_path = Path(test_data_temp_path) / "explicit.yaml"
     config_path.write_text(
