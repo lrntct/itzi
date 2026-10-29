@@ -301,7 +301,7 @@ def _dataset(
     _check_limit(domain.cols * domain.rows, limits.INPUT_MAX_2D_DOMAIN_CELLS, "domain cells")
 
     sources = source_names(simulations)
-    _check_limit(len(sources), limits.INPUT_MAX_DATA_VARIABLES, "data variables")
+    _check_limit(len(sources) + 1, limits.INPUT_MAX_DATA_VARIABLES, "data variables")
     x = domain.west + (np.arange(domain.cols, dtype=np.float64) + 0.5) * (
         (domain.east - domain.west) / domain.cols
     )
@@ -325,7 +325,8 @@ def _dataset(
             end_time=first.simulation_config.end_time,
             dtype=np.float32,
         )
-        mask = interface.get_npmask()
+        # Prevent Xarray from encoding Boolean data as int8.
+        ds["MASK"] = (("y", "x"), interface.get_npmask(), {"dtype": "bool"})
         assert first.grass_params.grassdata is not None and first.grass_params.location is not None
         grass_project = Path(first.grass_params.grassdata) / first.grass_params.location
         for (identifier, kind), name in sources.items():
@@ -377,37 +378,17 @@ def _dataset(
                 if not variable.sizes[old_time]:
                     raise ValueError(f"{identifier} has no samples during simulation time")
                 variable = variable.rename({old_time: f"time_{name}"})
-            if first.effective_mask.mode == "explicit":
-                # xarray-grass reads through the active mapset MASK. Explicit masks
-                # override it, so recover the unmasked source before applying ours.
-                if kind == "raster":
-                    data = interface.read_raster_map(identifier)
-                else:
-                    import grass.temporal as tgis
-
-                    map_rows = tgis.open_stds.open_old_stds(
-                        identifier, "strds"
-                    ).get_registered_maps(columns="id", order="start_time")
-                    original_time = opened[map_name][old_time]
-                    if first.simulation_config.temporal_type == TemporalType.RELATIVE:
-                        original_time = convert_relative_time_coordinate(original_time)
-                    selected = variable[f"time_{name}"]
-                    indices = np.flatnonzero(np.isin(original_time.values, selected.values))
-                    if len(map_rows) != original_time.size or len(indices) != selected.size:
-                        raise ValueError(f"STRDS {identifier} changed during Input reading")
-                    data = np.stack(
-                        [interface.read_raster_map(map_rows[index][0]) for index in indices]
-                    )
-                variable = variable.copy(data=data)
             if time_dims and first.simulation_config.temporal_type == TemporalType.ABSOLUTE:
                 time_name = f"time_{name}"
                 variable = variable.assign_coords(
                     {time_name: convert_absolute_time_coordinate(variable[time_name])}
                 )
             variable = variable.assign_coords(x=x, y=y)
-            variable = variable.where(~mask) if mask.any() else variable
+            if variable.dtype.kind == "i":
+                # PyGRASS exposes CELL NULLs as the int32 minimum, not NaN.
+                variable = variable.where(variable != np.iinfo(np.int32).min)
             variable.attrs = {"units": variable.attrs.get("units", "")}
-            ds[name] = variable
+            ds[name] = variable.load()
     ds.attrs = {
         "crs_wkt": crs_wkt,
         "itzi_dimension_names": {
@@ -416,7 +397,7 @@ def _dataset(
                 "y": "y",
                 "x": "x",
             }
-            for name in sources.values()
+            for name in ds.data_vars
         },
     }
     validate_crs(ds)

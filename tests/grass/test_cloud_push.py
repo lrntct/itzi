@@ -3,9 +3,13 @@
 import tarfile
 from dataclasses import replace
 from pathlib import Path
+from typing import Literal
 
 import grass.script as gscript
 import numpy as np
+import pytest
+import xarray as xr
+import zarr
 from pyproj import CRS
 
 from itzi.cloud import archive
@@ -15,11 +19,18 @@ from itzi.ensemble.resolution import resolve_ensemble
 from itzi.grass.session import GrassSessionManager
 
 
-def test_yaml_cloud_archive_from_grass(grass_5by5, tmp_path: Path, caplog) -> None:
+@pytest.mark.parametrize("mask_mode", ["active", "explicit"])
+def test_yaml_cloud_archive_from_grass(
+    grass_5by5: None,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    mask_mode: Literal["active", "explicit"],
+) -> None:
     GrassSessionManager.ensure_temporal_initialized()
-    gscript.mapcalc("cloud_rain0=1")
-    gscript.mapcalc("cloud_rain1=2")
-    gscript.mapcalc("cloud_rain2=3")
+    gscript.mapcalc("z=if(row() == 3 && col() == 3, null(), 0)", overwrite=True)
+    gscript.mapcalc("cloud_rain0=float(1)")
+    gscript.mapcalc("cloud_rain1=float(2)")
+    gscript.mapcalc("cloud_rain2=float(3)")
     gscript.run_command(
         "t.create",
         output="cloud_series",
@@ -75,9 +86,6 @@ outputs:
             "INPUT_MIN_SPATIAL_COORDINATE_SAMPLES": 5,
         }
     )
-    import xarray as xr
-    import zarr
-
     capability = archive.InputFormat(
         limits=limits,
         supported_versions=archive.SupportedVersions(
@@ -90,6 +98,16 @@ outputs:
     assert built.path.is_file()
     assert "statistics CSV output will not run" not in caplog.text
     assert "SWMM coupling/drainage will not run" in caplog.text
+    with tarfile.open(built.path, "r:zst") as tar:
+        tar.extractall(config.parent / "smoke-extracted", filter="data")
+    unmasked = xr.open_zarr(config.parent / "smoke-extracted" / "input.zarr", consolidated=False)
+    assert unmasked.MASK.dims == ("y", "x")
+    assert unmasked.MASK.dtype == np.dtype(bool)
+    assert not unmasked.MASK.values.any()
+    assert np.isnan(unmasked["raster_z_in_5by5"].values[2, 2])
+    np.testing.assert_array_equal(
+        unmasked["strds_cloud_series_in_5by5"].values[:, 0, 0], [1, 2, 3]
+    )
 
     gscript.mapcalc("cloud_explicit_mask=if(col() == 1,null(),1)")
     gscript.mapcalc("cloud_active_mask=if(col() == 5,null(),1)")
@@ -97,8 +115,13 @@ outputs:
     masked = tuple(
         replace(
             simulation,
-            grass_params=replace(simulation.grass_params, mask="cloud_explicit_mask@5by5"),
-            effective_mask=EffectiveMask("explicit", "cloud_explicit_mask@5by5"),
+            grass_params=replace(
+                simulation.grass_params,
+                mask="cloud_explicit_mask@5by5" if mask_mode == "explicit" else None,
+            ),
+            effective_mask=EffectiveMask(
+                mask_mode, "cloud_explicit_mask@5by5" if mask_mode == "explicit" else "MASK@5by5"
+            ),
         )
         for simulation in simulations
     )
@@ -112,10 +135,24 @@ outputs:
     assert len(ds.data_vars) < len(simulations) * len(
         simulations[0].simulation_config.input_map_names
     )
+    assert ds.MASK.dims == ("y", "x")
+    assert ds.MASK.dtype == np.dtype(bool)
+    expected_mask = np.zeros((5, 5), dtype=bool)
+    excluded_column = 0 if mask_mode == "explicit" else -1
+    included_column = -1 if mask_mode == "explicit" else 0
+    expected_mask[:, excluded_column] = True
+    np.testing.assert_array_equal(ds.MASK.values, expected_mask)
+    assert ds.attrs["itzi_dimension_names"]["MASK"] == {"y": "y", "x": "x"}
+    stored_mask = zarr.open_array(
+        config.parent / "masked-extracted" / "input.zarr" / "MASK", mode="r"
+    )
+    assert stored_mask.dtype == np.dtype(bool)
     ground = ds["raster_z_in_5by5"].values
-    assert np.isnan(ground[:, 0]).all()
-    assert np.isfinite(ground[:, -1]).all()  # Active MASK is not the explicit mask.
+    assert np.isnan(ground[:, excluded_column]).all()
+    assert np.isfinite(ground[:, included_column]).all()
+    assert np.isnan(ground[2, 2])
     rainfall = ds["strds_cloud_series_in_5by5"].values
     assert rainfall.shape == (3, 5, 5)
-    assert np.isnan(rainfall[:, :, 0]).all()
-    assert np.isfinite(rainfall[:, :, -1]).all()
+    assert np.isnan(rainfall[:, :, excluded_column]).all()
+    np.testing.assert_array_equal(rainfall[:, 0, included_column], [1, 2, 3])
+    assert np.isfinite(rainfall[:, :, included_column]).all()

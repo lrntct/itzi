@@ -13,6 +13,8 @@ from typing import cast
 
 import numpy as np
 import pytest
+from dask import array as da
+from dask import delayed
 from itzi_core.const import TemporalType
 from itzi_core.data_containers import SimulationConfig, SurfaceFlowParameters
 
@@ -373,11 +375,22 @@ def test_two_member_input_archive(monkeypatch: pytest.MonkeyPatch, tmp_path: Pat
         name = (backend_kwargs["raster"] or backend_kwargs["strds"])[0].split("@")[0]
         if name.startswith("rain"):
             steps = [0, 5, 10] if name == "rain_a" else [0, 3, 6, 9]
+            dtype = np.dtype("f4" if name == "rain_a" else "i4")
+
+            def read_values() -> np.ndarray:
+                assert sys.modules["itzi.grass.interface"] is fake_module
+                values = np.full((len(steps), 5, 5), 1 if name == "rain_a" else 2, dtype=dtype)
+                if name == "rain_b":
+                    values[:, 2, 2] = np.iinfo(np.int32).min
+                return values
+
             return xr.Dataset(
                 {
                     name: (
                         (f"start_time_{name}", "y", "x"),
-                        np.full((len(steps), 5, 5), 1 if name == "rain_a" else 2, dtype="f4"),
+                        da.from_delayed(
+                            delayed(read_values)(), shape=(len(steps), 5, 5), dtype=dtype
+                        ),
                     )
                 },
                 coords={
@@ -431,11 +444,16 @@ def test_two_member_input_archive(monkeypatch: pytest.MonkeyPatch, tmp_path: Pat
     np.testing.assert_array_equal(ds.member_label, ["sim-0", "sim-1"])
     assert ds.member_label.dtype.kind == "U"
     assert set(ds.data_vars) == {
+        "MASK",
         "raster_dem_in_mapset",
         "raster_n_in_mapset",
         "strds_rain_a_in_mapset",
         "strds_rain_b_in_mapset",
     }
+    assert ds.MASK.dims == ("y", "x")
+    assert ds.MASK.dtype == np.dtype(bool)
+    assert not ds.MASK.values.any()
+    assert ds.attrs["itzi_dimension_names"]["MASK"] == {"y": "y", "x": "x"}
     assert ds.strds_rain_a_in_mapset.sizes["time_strds_rain_a_in_mapset"] == 3
     assert ds.strds_rain_b_in_mapset.sizes["time_strds_rain_b_in_mapset"] == 4
     np.testing.assert_array_equal(
@@ -444,6 +462,7 @@ def test_two_member_input_archive(monkeypatch: pytest.MonkeyPatch, tmp_path: Pat
     )
     assert ds.strds_rain_a_in_mapset.values[0, 0, 0] == 1
     assert ds.strds_rain_b_in_mapset.values[0, 0, 0] == 2
+    assert np.isnan(ds.strds_rain_b_in_mapset.values[:, 2, 2]).all()
     assert (
         ds.attrs["itzi_dimension_names"]["strds_rain_b_in_mapset"]["time"]
         == "time_strds_rain_b_in_mapset"
@@ -452,7 +471,13 @@ def test_two_member_input_archive(monkeypatch: pytest.MonkeyPatch, tmp_path: Pat
     for name in ds.variables:
         metadata = zarr.open_array(tmp_path / "extracted" / "input.zarr" / name, mode="r")
         assert [codec.to_dict()["name"] for codec in metadata.metadata.codecs] == ["bytes", "zstd"]
-        assert metadata.metadata.codecs[0].to_dict()["configuration"]["endian"] == "little"
+        bytes_codec = metadata.metadata.codecs[0].to_dict()
+        if name == "MASK":
+            assert metadata.dtype == np.dtype(bool)
+            assert metadata.chunks == (5, 5)
+            assert bytes_codec == {"name": "bytes"}
+        else:
+            assert bytes_codec == {"name": "bytes", "configuration": {"endian": "little"}}
         if name in {"strds_rain_a_in_mapset", "strds_rain_b_in_mapset"}:
             assert metadata.chunks[0] == 1
 
@@ -475,7 +500,7 @@ def test_two_member_input_archive(monkeypatch: pytest.MonkeyPatch, tmp_path: Pat
             ensemble,
             simulations,
             capability.model_copy(
-                update={"limits": limits.model_copy(update={"INPUT_MAX_DATA_VARIABLES": 3})}
+                update={"limits": limits.model_copy(update={"INPUT_MAX_DATA_VARIABLES": 4})}
             ),
             tmp_path / "invalid.tzst",
         )
