@@ -631,7 +631,6 @@ def fake_cloud_server() -> FakeCloudServer:
         server.server_close()
 
 
-@pytest.mark.cloud
 def test_cloud_login_status_pull_with_fake_provider(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -709,7 +708,6 @@ def test_cloud_login_status_pull_with_fake_provider(
     ]
 
 
-@pytest.mark.cloud
 @pytest.mark.parametrize("input_state", ["uploading", "validating", "accepted", "failed"])
 def test_cloud_status_reports_input_facts_and_recorded_runs(
     monkeypatch: pytest.MonkeyPatch,
@@ -792,7 +790,6 @@ def test_cloud_status_reports_input_facts_and_recorded_runs(
         assert "Local upload stage: uploaded" in text
 
 
-@pytest.mark.cloud
 def test_cloud_pull_surfaces_api_detail_when_results_are_unavailable(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -829,7 +826,6 @@ def test_cloud_pull_surfaces_api_detail_when_results_are_unavailable(
         )
 
 
-@pytest.mark.cloud
 @pytest.mark.parametrize("refresh", ["expired_url", "denied_download"])
 def test_cloud_pull_refreshes_signed_url_for_same_package(
     monkeypatch: pytest.MonkeyPatch,
@@ -869,7 +865,6 @@ def test_cloud_pull_refreshes_signed_url_for_same_package(
     )
 
 
-@pytest.mark.cloud
 @pytest.mark.parametrize(
     ("failure", "message"),
     [
@@ -935,7 +930,6 @@ def test_cloud_pull_failures_never_publish_unverified_artifact(
     assert len(state.package_requests) == 1
 
 
-@pytest.mark.cloud
 def test_cloud_pull_preserves_existing_destination(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -957,7 +951,6 @@ def test_cloud_pull_preserves_existing_destination(
     assert fake_cloud_server.state.package_requests == []
 
 
-@pytest.mark.cloud
 @pytest.mark.parametrize("selection", ["missing", "other_account", "too_many", "maximum"])
 def test_cloud_pull_checks_selection_before_requesting_package(
     monkeypatch: pytest.MonkeyPatch,
@@ -1004,7 +997,6 @@ def test_cloud_pull_checks_selection_before_requesting_package(
         assert state.package_requests == []
 
 
-@pytest.mark.cloud
 def test_cloud_status_requires_an_active_session(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1095,7 +1087,6 @@ def _fake_archive(
     )
 
 
-@pytest.mark.cloud
 def test_cloud_push_creates_and_resumes_each_document(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, fake_cloud_server: FakeCloudServer
 ) -> None:
@@ -1219,7 +1210,6 @@ def test_cloud_push_creates_and_resumes_each_document(
     assert len(fake_cloud_server.state.ensemble_creates) == 2
 
 
-@pytest.mark.cloud
 def test_cloud_push_distinguishes_yaml_and_forced_archive_changes(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, fake_cloud_server: FakeCloudServer
 ) -> None:
@@ -1268,7 +1258,6 @@ def test_cloud_push_distinguishes_yaml_and_forced_archive_changes(
     assert len({draft["idempotency_key"] for draft in drafts.values()}) == 3
 
 
-@pytest.mark.cloud
 @pytest.mark.parametrize("failure", ["conflict", "lost_response"])
 def test_cloud_push_retries_with_same_idempotency_key(
     monkeypatch: pytest.MonkeyPatch,
@@ -1316,7 +1305,6 @@ def test_cloud_push_retries_with_same_idempotency_key(
     assert len(state.ensemble_creates) == 2
 
 
-@pytest.mark.cloud
 @pytest.mark.parametrize(
     ("failure", "stage", "message"),
     [
@@ -1383,7 +1371,6 @@ def test_cloud_upload_failure_resumes_safely(
     )
 
 
-@pytest.mark.cloud
 def test_cloud_upload_refuses_unpermitted_refresh_and_wrong_digest(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, fake_cloud_server: FakeCloudServer
 ) -> None:
@@ -1416,7 +1403,6 @@ def test_cloud_upload_refuses_unpermitted_refresh_and_wrong_digest(
     assert len(fake_cloud_server.state.uploads) == 0
 
 
-@pytest.mark.cloud
 @pytest.mark.parametrize("validation_state", ["validating", "failed", "accepted"])
 def test_cloud_push_waits_for_accepted_member_mapping(
     monkeypatch: pytest.MonkeyPatch,
@@ -1462,7 +1448,6 @@ def test_cloud_push_waits_for_accepted_member_mapping(
     assert len(state.simulation_puts) == len(state.run_requests) == 1
 
 
-@pytest.mark.cloud
 @pytest.mark.parametrize(
     "failure", ["fail_simulation", "lose_simulation_response", "fail_run", "lose_run_response"]
 )
@@ -1509,7 +1494,6 @@ def test_cloud_push_resumes_failed_member_and_replays_run_key(
     assert (len(state.simulation_puts), len(state.run_requests)) == previous
 
 
-@pytest.mark.cloud
 def test_cloud_push_retries_until_result_repository_is_sealed(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, fake_cloud_server: FakeCloudServer
 ) -> None:
@@ -1542,7 +1526,6 @@ def test_cloud_push_retries_until_result_repository_is_sealed(
     assert len(state.run_requests) == 4
 
 
-@pytest.mark.cloud
 @pytest.mark.parametrize("failure", ["pending", "other_conflict", "wrong_action", "malformed"])
 def test_cloud_push_repository_failure_preserves_progress_and_resumes(
     monkeypatch: pytest.MonkeyPatch,
@@ -1620,7 +1603,6 @@ def test_cloud_push_repository_failure_preserves_progress_and_resumes(
     assert len({key for sim, key, _ in state.run_requests if sim == "simulation-input-1-1"}) == 1
 
 
-@pytest.mark.cloud
 @pytest.mark.parametrize(
     ("time", "absolute_start"),
     [
