@@ -20,6 +20,7 @@ from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
 from typing import Literal, TypedDict
+from uuid import uuid4
 
 from platformdirs import user_data_dir
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, with_config
@@ -95,6 +96,28 @@ def save_ensemble_draft(draft: EnsembleDraft) -> None:
     _write_metadata_file(metadata_file, metadata)
 
 
+def reset_ensemble_draft(draft: EnsembleDraft) -> EnsembleDraft:
+    """Replace a deleted submission with a durable, fresh creation attempt."""
+    metadata_file = get_metadata_file_path()
+    metadata = _load_metadata_file(metadata_file)
+    updated = draft.model_copy(
+        update={
+            "idempotency_key": uuid4().hex,
+            "ensemble_id": None,
+            "input_id": None,
+            "upload_stage": None,
+            "transfer_id": None,
+            "confirmation_state": None,
+            "simulation_ids": {},
+            "run_ids": {},
+        }
+    )
+    del metadata.ensembles[draft.idempotency_key]
+    metadata.ensembles[updated.idempotency_key] = updated
+    _write_metadata_file(metadata_file, metadata)
+    return updated
+
+
 def list_ensemble_drafts(email: str) -> tuple[EnsembleDraft, ...]:
     """Return locally recorded submissions for the authenticated account."""
     metadata = _load_metadata_file(get_metadata_file_path())
@@ -112,11 +135,15 @@ def get_or_create_ensemble_draft(
     force: bool = False,
 ) -> EnsembleDraft:
     """Resume the same Input, or create a new Ensemble for a changed document/Input."""
-    key = sha256(json.dumps((email, project_id, yaml_sha256, archive_sha256)).encode()).hexdigest()
     metadata = _load_metadata_file(get_metadata_file_path())
-    stored = metadata.ensembles.get(key)
-    if stored is not None:
-        return stored
+    for draft in metadata.ensembles.values():
+        if (
+            draft.email == email
+            and draft.project_id == project_id
+            and draft.yaml_sha256 == yaml_sha256
+            and draft.archive_sha256 == archive_sha256
+        ):
+            return draft
     if not force and any(
         draft.email == email
         and draft.project_id == project_id
@@ -127,6 +154,7 @@ def get_or_create_ensemble_draft(
             "The input archive differs from the one recorded for this yaml document; "
             "use --force to create a new Ensemble."
         )
+    key = sha256(json.dumps((email, project_id, yaml_sha256, archive_sha256)).encode()).hexdigest()
     draft = EnsembleDraft(
         email=email,
         project_id=project_id,

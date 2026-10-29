@@ -63,3 +63,44 @@ def test_save_simulation_preserves_existing_metadata_fields(
     assert stored["simulations"]["old"]["note"] == "keep"
     assert stored["simulations"]["old"]["grass_params"]["region"] == "keep"
     assert set(stored["simulations"]) == {"old", "new"}
+
+
+def test_reset_ensemble_preserves_unrelated_metadata_and_resumes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(metadata_storage, "user_data_dir", lambda *_: str(tmp_path))
+    draft = metadata_storage.get_or_create_ensemble_draft(
+        "user@example.com", "project", ("member",), GrassParams(), "archive-hash", "yaml-hash"
+    )
+    unrelated = draft.model_copy(
+        update={"email": "other@example.com", "idempotency_key": "other-key"}
+    )
+    metadata_storage.save_ensemble_draft(unrelated)
+    path = metadata_storage.get_metadata_file_path()
+    contents = json.loads(path.read_text())
+    contents["extension"] = {"preserve": True}
+    contents["ensembles"][draft.idempotency_key]["note"] = "keep"
+    path.write_text(json.dumps(contents))
+    draft = metadata_storage.list_ensemble_drafts(draft.email)[0]
+
+    reset = metadata_storage.reset_ensemble_draft(draft)
+
+    stored = json.loads(path.read_text())
+    assert stored["extension"] == contents["extension"]
+    assert (
+        stored["ensembles"][unrelated.idempotency_key]
+        == contents["ensembles"][unrelated.idempotency_key]
+    )
+    assert stored["ensembles"][reset.idempotency_key]["note"] == "keep"
+    assert draft.idempotency_key not in stored["ensembles"]
+    assert (
+        metadata_storage.get_or_create_ensemble_draft(
+            draft.email,
+            draft.project_id,
+            draft.member_labels,
+            draft.grass_params,
+            draft.archive_sha256,
+            draft.yaml_sha256,
+        )
+        == reset
+    )

@@ -16,6 +16,7 @@ from typing import Any, cast
 from urllib.parse import urlparse
 
 import pytest
+import requests
 
 from itzi.cloud.cli import itzi_cloud_login, itzi_cloud_pull, itzi_cloud_push, itzi_cloud_status
 from itzi.grass.session import GrassParams
@@ -85,6 +86,7 @@ class FakeCloudState:
         self.lose_run_response = False
         self.ensemble_simulations: dict[str, list[dict[str, str | int]]] = {}
         self.status_gets: list[tuple[str, str]] = []
+        self.input_errors: dict[str, tuple[int, dict[str, str]]] = {}
 
 
 class FakeCloudServer(ThreadingHTTPServer):
@@ -326,6 +328,9 @@ class FakeCloudRequestHandler(BaseHTTPRequestHandler):
                 return
             self.server.state.status_gets.append((path, self.headers.get("X-Session-Token", "")))
             input_id = path.removeprefix("/execution-api/v1/inputs/")
+            if input_id in self.server.state.input_errors:
+                self._send_json(*self.server.state.input_errors[input_id])
+                return
             confirmed = self.server.state.confirmed.get(input_id)
             self._send_json(
                 200,
@@ -1208,6 +1213,170 @@ def test_cloud_push_creates_and_resumes_each_document(
     with pytest.raises(FatalError, match="use --force"):
         itzi_cloud_push(args)
     assert len(fake_cloud_server.state.ensemble_creates) == 2
+
+
+@pytest.mark.parametrize("force", [False, True])
+@pytest.mark.parametrize("stage", [None, "uploaded", "confirmed"])
+def test_cloud_push_recreates_deleted_ensemble(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    fake_cloud_server: FakeCloudServer,
+    force: bool,
+    stage: str | None,
+) -> None:
+    from itzi.cloud import archive
+
+    ctx = _configure_cloud_test_environment(monkeypatch, tmp_path, fake_cloud_server)
+    itzi_cloud_login(
+        argparse.Namespace(email="user@example.com", password="secret", logout=False, status=False)
+    )
+    path = tmp_path / "input.tzst"
+    path.write_bytes(b"unchanged Input")
+    built = _fake_archive(path, tmp_path / "study.yaml", ctx.grass_params)
+    monkeypatch.setattr(archive, "build_archives", lambda *_: (built,))
+    args = argparse.Namespace(project="proj-public", config_file=["study.yaml"], force=force)
+    state = fake_cloud_server.state
+    state.storage_entitlement_error = stage is None
+    state.confirm_error = stage == "uploaded"
+    if stage == "confirmed":
+        itzi_cloud_push(args)
+    else:
+        with pytest.raises(
+            FatalError, match="storage entitlement exceeded" if stage is None else "503"
+        ):
+            itzi_cloud_push(args)
+    metadata_path = ctx.metadata_storage.get_metadata_file_path()
+    before = json.loads(metadata_path.read_text())
+    original = next(iter(before["ensembles"].values()))
+    assert original["upload_stage"] == stage
+
+    state.storage_entitlement_error = False
+    state.confirm_error = False
+    # Keep the cached creation response so reusing its key would return deleted IDs.
+    state.input_errors["input-1"] = (404, {"detail": "Input not found"})
+    itzi_cloud_push(args)
+
+    after = json.loads(metadata_path.read_text())
+    assert after["simulations"] == before["simulations"]
+    assert len(after["ensembles"]) == 1
+    recreated = next(iter(after["ensembles"].values()))
+    assert recreated["idempotency_key"] != original["idempotency_key"]
+    assert original["idempotency_key"] not in after["ensembles"]
+    assert recreated["ensemble_id"] == "ensemble-2"
+    assert recreated["input_id"] == "input-2"
+    assert recreated["archive_sha256"] == original["archive_sha256"]
+    assert recreated["yaml_sha256"] == original["yaml_sha256"]
+    assert recreated["upload_stage"] == "confirmed"
+    assert recreated["simulation_ids"] == {"0": "simulation-input-2-0"}
+    assert recreated["run_ids"] == {"0": "run-simulation-input-2-0"}
+    assert len(state.ensemble_creates) == len(state.ensembles_by_key) == 2
+    assert len(state.uploads) == (1 if stage is None else 2)
+    assert state.uploads[-1][1] == b"unchanged Input"
+    requests_before_resume = (
+        len(state.ensemble_creates),
+        len(state.uploads),
+        len(state.confirm_requests),
+        len(state.simulation_puts),
+        len(state.run_requests),
+    )
+    itzi_cloud_push(args)
+    assert json.loads(metadata_path.read_text()) == after
+    assert (
+        len(state.ensemble_creates),
+        len(state.uploads),
+        len(state.confirm_requests),
+        len(state.simulation_puts),
+        len(state.run_requests),
+    ) == requests_before_resume
+
+
+def test_cloud_push_retries_deleted_ensemble_creation_with_new_key(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, fake_cloud_server: FakeCloudServer
+) -> None:
+    from itzi.cloud import archive
+
+    ctx = _configure_cloud_test_environment(monkeypatch, tmp_path, fake_cloud_server)
+    itzi_cloud_login(
+        argparse.Namespace(email="user@example.com", password="secret", logout=False, status=False)
+    )
+    path = tmp_path / "input.tzst"
+    path.write_bytes(b"unchanged Input")
+    built = _fake_archive(path, tmp_path / "study.yaml", ctx.grass_params)
+    monkeypatch.setattr(archive, "build_archives", lambda *_: (built,))
+    args = argparse.Namespace(project="proj-public", config_file=["study.yaml"])
+    itzi_cloud_push(args)
+    metadata_path = ctx.metadata_storage.get_metadata_file_path()
+    original = next(iter(json.loads(metadata_path.read_text())["ensembles"].values()))
+    state = fake_cloud_server.state
+    state.input_errors["input-1"] = (404, {"detail": "Input not found"})
+    state.lose_create_response = True
+
+    with pytest.raises(FatalError, match="503"):
+        itzi_cloud_push(args)
+    drafts = json.loads(metadata_path.read_text())["ensembles"]
+    assert len(drafts) == 1
+    pending = next(iter(drafts.values()))
+    assert pending["idempotency_key"] != original["idempotency_key"]
+    for field in ("ensemble_id", "input_id", "upload_stage", "transfer_id", "confirmation_state"):
+        assert pending[field] is None
+    assert pending["simulation_ids"] == pending["run_ids"] == {}
+
+    itzi_cloud_push(args)
+    assert [call[1] for call in state.ensemble_creates] == [
+        original["idempotency_key"],
+        pending["idempotency_key"],
+        pending["idempotency_key"],
+    ]
+    assert len(state.ensembles_by_key) == len(state.uploads) == 2
+    recreated = next(iter(json.loads(metadata_path.read_text())["ensembles"].values()))
+    assert recreated["ensemble_id"] == "ensemble-2"
+    assert recreated["input_id"] == "input-2"
+    assert recreated["run_ids"] == {"0": "run-simulation-input-2-0"}
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        401,
+        403,
+        503,
+        requests.Timeout("Input status timed out"),
+        requests.ConnectionError("Input status connection failed"),
+    ],
+)
+def test_cloud_push_preserves_draft_on_input_check_error(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    fake_cloud_server: FakeCloudServer,
+    error: int | requests.RequestException,
+) -> None:
+    from itzi.cloud import archive
+
+    ctx = _configure_cloud_test_environment(monkeypatch, tmp_path, fake_cloud_server)
+    itzi_cloud_login(
+        argparse.Namespace(email="user@example.com", password="secret", logout=False, status=False)
+    )
+    path = tmp_path / "input.tzst"
+    path.write_bytes(b"unchanged Input")
+    built = _fake_archive(path, tmp_path / "study.yaml", ctx.grass_params)
+    monkeypatch.setattr(archive, "build_archives", lambda *_: (built,))
+    args = argparse.Namespace(project="proj-public", config_file=["study.yaml"], force=True)
+    itzi_cloud_push(args)
+    metadata_path = ctx.metadata_storage.get_metadata_file_path()
+    before = metadata_path.read_bytes()
+    if isinstance(error, int):
+        fake_cloud_server.state.input_errors["input-1"] = (error, {"detail": "Unavailable"})
+    else:
+
+        def get(url: str, **kwargs: str | int | dict[str, str]) -> requests.Response:
+            raise error
+
+        monkeypatch.setattr(requests, "get", get)
+    with pytest.raises(FatalError, match=str(error)):
+        itzi_cloud_push(args)
+    assert metadata_path.read_bytes() == before
+    assert len(fake_cloud_server.state.ensemble_creates) == 1
+    assert len(fake_cloud_server.state.uploads) == 1
 
 
 def test_cloud_push_distinguishes_yaml_and_forced_archive_changes(

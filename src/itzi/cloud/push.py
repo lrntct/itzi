@@ -30,6 +30,7 @@ from itzi.cloud.archive import BuiltArchive, source_names
 from itzi.cloud.metadata_storage import (
     EnsembleDraft,
     get_or_create_ensemble_draft,
+    reset_ensemble_draft,
     save_ensemble_draft,
 )
 from itzi.cloud.schemas import (
@@ -51,7 +52,7 @@ RESULT_REPOSITORY_POLL_SECONDS = 2
 def create_ensemble(
     archive: BuiltArchive, *, project_id: str, email: str, session_token: str, force: bool = False
 ) -> EnsembleDraft:
-    """Create once, replay an interrupted request, or resume its recorded IDs."""
+    """Create or resume an Ensemble, replacing cached IDs if deleted."""
     source = archive.ensemble.source
     if source.yaml_sha256 is None:
         raise ValueError("Cloud push requires a parsed YAML document")
@@ -66,7 +67,15 @@ def create_ensemble(
         force=force,
     )
     if draft.ensemble_id is not None and draft.input_id is not None:
-        return draft
+        response = requests.get(
+            urls.get_input_endpoint(draft.input_id),
+            headers={"X-Session-Token": session_token},
+            timeout=30,
+        )
+        if response.status_code != 404:
+            response.raise_for_status()
+            return draft
+        draft = reset_ensemble_draft(draft)
 
     response = requests.post(
         urls.get_ensembles_endpoint(project_id),
