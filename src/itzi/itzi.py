@@ -31,6 +31,7 @@ import time
 from argparse import Namespace
 from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor
+from contextlib import ExitStack
 from datetime import timedelta
 from importlib.metadata import version
 from multiprocessing import Process, get_context
@@ -53,8 +54,12 @@ from itzi.ensemble.models import (
     ResolvedSimulation,
     ValidationFailure,
 )
-from itzi.ensemble.resolution import resolve_ensemble, validate_resolved_ensemble
-from itzi.grass.session import GrassSessionManager
+from itzi.ensemble.resolution import (
+    resolve_ensemble,
+    validate_resolved_ensemble,
+    verify_resolved_simulation,
+)
+from itzi.grass.session import GrassSessionManager, _acquire_session
 from itzi.manifest import (
     _create_manifest,
     _initial_member_states,
@@ -110,18 +115,27 @@ def sim_runner_worker(conf_file: str, hotstart_file: str | None) -> None:
         with GrassSessionManager(grass_params):
             sim_runner = SimulationRunner(
                 sim_params,
-                grass_params,
                 hotstart_path=hotstart_file,
                 stats_file=conf_data.stats_file,
+                hotstart_config=conf_data.hotstart_config,
             )
-            sim_runner.initialize().run().finalize()
+            sim_runner.initialize()
+            try:
+                sim_runner.run()
+            except BaseException:
+                try:
+                    sim_runner.finalize()
+                except Exception as finalize_error:  # noqa: BLE001 - preserve the original error.
+                    msgr.warning(f"Could not finalize partial outputs: {finalize_error}")
+                raise
+            sim_runner.finalize()
     except msgr.FatalError:
         raise SystemExit(1) from None
     except SystemExit as error:
         detail = error.code if isinstance(error.code, str) else f"exit status {error.code}"
         msgr.warning(f"Simulation terminated with {detail}")
         raise SystemExit(1) from None
-    except Exception as error:
+    except Exception as error:  # noqa: BLE001 - report any worker failure as an exit status.
         msgr.warning(f"Error during execution: {type(error).__name__}: {error}")
         raise SystemExit(1) from None
 
@@ -131,23 +145,22 @@ def resolved_sim_runner_worker(simulation: ResolvedSimulation) -> tuple[str, str
     msgr.raise_on_error = True
     msgr._itzi_logger.set_verbosity(msgr.verbosity())
     try:
-        with GrassSessionManager(simulation.grass_params):
+        with GrassSessionManager(simulation.grass_params) as context:
+            verify_resolved_simulation(simulation, context)
             runner = SimulationRunner(
                 simulation.simulation_config,
-                simulation.grass_params,
                 stats_file=str(simulation.artifacts.statistics_file)
                 if simulation.artifacts.statistics_file is not None
                 else None,
-                effective_mask=simulation.effective_mask,
                 input_kinds=dict(simulation.input_kinds),
             )
             runner.initialize()
             try:
                 runner.run()
-            except Exception:
+            except BaseException:
                 try:
                     runner.finalize()
-                except Exception as finalize_error:
+                except Exception as finalize_error:  # noqa: BLE001 - preserve the original error.
                     msgr.warning(
                         f"Could not finalize partial outputs: "
                         f"{type(finalize_error).__name__}: {finalize_error}"
@@ -155,7 +168,7 @@ def resolved_sim_runner_worker(simulation: ResolvedSimulation) -> tuple[str, str
                 raise
             runner.finalize()
         return "completed", None
-    except Exception as error:
+    except Exception as error:  # noqa: BLE001 - report any member failure as an execution status.
         detail = f"{type(error).__name__}: {error}"
         msgr.warning(f"Simulation failed: {detail}")
         return "execution_failed", detail
@@ -175,13 +188,16 @@ def run_validation_worker(simulations: tuple[ResolvedSimulation, ...]) -> dict[s
     msgr.raise_on_error = True
     msgr._itzi_logger.set_verbosity(msgr.verbosity())
     failures: dict[str, str] = {}
-    with GrassSessionManager(simulations[0].grass_params):
+    if not simulations:
+        return failures
+    with ExitStack() as resources:
+        _acquire_session(simulations[0].grass_params, resources)
         from itzi.ensemble.run_validation import validate_run_requirements
 
         for simulation in simulations:
             try:
                 validate_run_requirements(simulation)
-            except Exception as error:
+            except Exception as error:  # noqa: BLE001 - retain member-local failures and continue.
                 failures[simulation.simulation_id] = f"{type(error).__name__}: {error}"
     return failures
 
@@ -221,7 +237,8 @@ def reconcile_hotstart_commands(
         if config_key is None:
             if len(config_file_list) != 1:
                 msgr.fatal(
-                    "A single unnamed --resume-from value can only be used with a single config file"
+                    "A single unnamed --resume-from value can only be used "
+                    "with a single config file"
                 )
             return [(config_file_list[0], hotstart_file)]
 
@@ -520,7 +537,7 @@ def _resolve_ensemble_in_subprocess(
     try:
         with ProcessPoolExecutor(max_workers=1, mp_context=get_context("spawn")) as executor:
             return executor.submit(resolver_worker, expanded).result()
-    except Exception as error:
+    except Exception as error:  # noqa: BLE001 - report worker and process failures as validation.
         detail = f"{type(error).__name__}: {error}"
     return tuple(
         ValidationFailure(
@@ -536,7 +553,7 @@ def _run_simulation_in_subprocess(simulation: ResolvedSimulation) -> tuple[str, 
     try:
         with ProcessPoolExecutor(max_workers=1, mp_context=get_context("spawn")) as executor:
             return executor.submit(resolved_sim_runner_worker, simulation).result()
-    except Exception as error:
+    except Exception as error:  # noqa: BLE001 - report worker and process failures as execution.
         return "execution_failed", f"{type(error).__name__}: {error}"
 
 
@@ -546,7 +563,7 @@ def _validate_run_requirements_in_subprocess(
     try:
         with ProcessPoolExecutor(max_workers=1, mp_context=get_context("spawn")) as executor:
             return executor.submit(run_validation_worker, simulations).result()
-    except Exception as error:
+    except Exception as error:  # noqa: BLE001 - report worker and process failures as validation.
         detail = f"{type(error).__name__}: {error}"
         return {simulation.simulation_id: detail for simulation in simulations}
 

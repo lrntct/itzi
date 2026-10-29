@@ -1,9 +1,11 @@
-"""GRASS integration coverage for basic spawned YAML ensemble execution."""
+"""In-process YAML ensemble behavior and spawned-worker integration coverage."""
 
 from __future__ import annotations
 
 import os
+from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime, timedelta
+from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -18,9 +20,28 @@ from itzi_core import TemporalType
 from itzi.cli_parser import build_parser
 from itzi.ensemble.models import ResolvedSimulation, ValidationFailure
 from itzi.grass.names import derived_record_name
-from itzi.grass.session import GrassSessionManager
-from itzi.itzi import _resolve_ensemble_in_subprocess, itzi_run, run_validation_worker
+from itzi.grass.session import GrassParams, GrassSessionManager
+from itzi.itzi import (
+    itzi_run,
+    resolved_sim_runner_worker,
+    resolver_worker,
+    run_validation_worker,
+)
 from itzi.run_plan import load_batch
+
+
+@pytest.fixture
+def ensemble_in_process(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Exercise real workers without paying for process isolation in behavior tests."""
+    monkeypatch.setattr("itzi.itzi._resolve_ensemble_in_subprocess", resolver_worker)
+    monkeypatch.setattr(
+        "itzi.itzi._validate_run_requirements_in_subprocess", run_validation_worker
+    )
+    monkeypatch.setattr("itzi.itzi._run_simulation_in_subprocess", resolved_sim_runner_worker)
+
+
+def _record_worker_pid(directory: Path) -> None:
+    (directory / str(os.getpid())).touch()
 
 
 def write_study(tmp_path: Path, **changes: dict) -> Path:
@@ -50,41 +71,54 @@ def read_manifest(tmp_path: Path) -> dict:
     )
 
 
-@pytest.mark.forked
+@pytest.mark.usefixtures("grass_5by5")
+def test_resolution_rejects_unsupported_grass_before_reading_region(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from itzi.ensemble.resolution import resolve_ensemble
+
+    path = write_study(tmp_path, grass={"region": "missing_region"})
+    expanded = load_batch([str(path)])[0][0].simulations
+    monkeypatch.setattr(gscript, "parse_command", lambda *_args, **_kwargs: {"version": "8.4.2"})
+
+    with pytest.raises(RuntimeError, match="requires at least GRASS 8.5, found version 8.4"):
+        resolve_ensemble(expanded)
+
+
 @pytest.mark.usefixtures("grass_5by5")
 def test_input_resolution_qualifies_rasters_and_strds_and_rejects_ambiguity(
     tmp_path: Path,
 ) -> None:
+    import grass.temporal as tgis
     from grass.pygrass import utils as gutils
 
     GrassSessionManager.ensure_temporal_initialized()
     mapset = gutils.getenv("MAPSET")
     gscript.mapcalc("stage_rain=1")
-    gscript.run_command(
-        "t.create",
-        output="stage_series",
+    tgis.open_new_stds(
+        name="stage_series",
         type="strds",
         temporaltype="relative",
-        semantictype="mean",
+        semantic="mean",
         title="stage_series",
-        description="stage_series",
+        descr="stage_series",
+        overwrite=gscript.overwrite(),
     )
-    gscript.run_command(
-        "t.register",
-        flags="i",
-        input="stage_series",
+    tgis.register_maps_in_space_time_dataset(
+        name="stage_series",
         type="raster",
         maps="stage_rain",
         start="0",
         increment="60",
         unit="seconds",
+        interval=True,
     )
     path = write_study(
         tmp_path,
         input={"ground_elevation": f"z@{mapset}", "rainfall_rate": "stage_series"},
     )
     expanded = load_batch([str(path)])[0][0].simulations
-    resolved = _resolve_ensemble_in_subprocess(expanded)[0]
+    resolved = resolver_worker(expanded)[0]
     assert isinstance(resolved, ResolvedSimulation)
     assert resolved.simulation_config.input_map_names == {
         "ground_elevation": f"z@{mapset}",
@@ -95,42 +129,41 @@ def test_input_resolution_qualifies_rasters_and_strds_and_rejects_ambiguity(
     assert run_validation_worker((resolved,)).get(resolved.simulation_id) is None
 
     path = write_study(tmp_path, input={"rainfall_rate": f"stage_series@{mapset}"})
-    qualified = _resolve_ensemble_in_subprocess(load_batch([str(path)])[0][0].simulations)[0]
+    qualified = resolver_worker(load_batch([str(path)])[0][0].simulations)[0]
     assert isinstance(qualified, ResolvedSimulation)
     assert qualified.simulation_id == resolved.simulation_id
 
     gscript.mapcalc("stage_series=1")
-    ambiguous = _resolve_ensemble_in_subprocess(load_batch([str(path)])[0][0].simulations)[0]
+    ambiguous = resolver_worker(load_batch([str(path)])[0][0].simulations)[0]
     assert isinstance(ambiguous, ValidationFailure)
     assert f"raster stage_series@{mapset}" in ambiguous.detail
     assert f"STRDS stage_series@{mapset}" in ambiguous.detail
 
 
-@pytest.mark.forked
-@pytest.mark.usefixtures("grass_5by5")
+@pytest.mark.usefixtures("grass_5by5", "ensemble_in_process")
 def test_temporal_run_validation_failure_does_not_stop_next_member(tmp_path: Path) -> None:
+    import grass.temporal as tgis
     from grass.pygrass import utils as gutils
 
     GrassSessionManager.ensure_temporal_initialized()
     gscript.mapcalc("stage_short_rain=1")
-    gscript.run_command(
-        "t.create",
-        output="stage_short_series",
+    tgis.open_new_stds(
+        name="stage_short_series",
         type="strds",
         temporaltype="relative",
-        semantictype="mean",
+        semantic="mean",
         title="stage_short_series",
-        description="stage_short_series",
+        descr="stage_short_series",
+        overwrite=gscript.overwrite(),
     )
-    gscript.run_command(
-        "t.register",
-        flags="i",
-        input="stage_short_series",
+    tgis.register_maps_in_space_time_dataset(
+        name="stage_short_series",
         type="raster",
         maps="stage_short_rain",
         start="0",
         increment="30",
         unit="seconds",
+        interval=True,
     )
     path = write_study(
         tmp_path,
@@ -154,7 +187,60 @@ def test_temporal_run_validation_failure_does_not_stop_next_member(tmp_path: Pat
     assert gutils.get_mapset_raster(f"{output.partition('@')[0]}_0000", gutils.getenv("MAPSET"))
 
 
-@pytest.mark.forked
+@pytest.mark.usefixtures("grass_5by5")
+@pytest.mark.parametrize("external_change", [False, True])
+def test_failed_member_restores_settings_before_next_default_region_verification(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, external_change: bool
+) -> None:
+    from itzi.ensemble import run_validation
+    from itzi.ensemble.resolution import resolve_ensemble
+
+    gscript.mapcalc("empty_mask=0")
+    first_path = write_study(
+        tmp_path,
+        grass={"region": "3by5", "mask": "empty_mask"},
+        outputs={"rasters": {"prefix": "failed_{simulation}", "variables": ["water_depth"]}},
+    )
+    first = resolve_ensemble(load_batch([str(first_path)])[0][0].simulations)[0]
+    second_path = write_study(
+        tmp_path,
+        outputs={"rasters": {"prefix": "valid_{simulation}", "variables": ["water_depth"]}},
+    )
+    second = resolve_ensemble(load_batch([str(second_path)])[0][0].simulations)[0]
+    assert isinstance(first, ResolvedSimulation)
+    assert isinstance(second, ResolvedSimulation)
+    previous = {
+        key: os.environ.get(key)
+        for key in ("GISRC", "GRASS_REGION", "WIND_OVERRIDE", "GRASS_MASK")
+    }
+    rasters = gscript.list_strings("raster")
+    saved_regions = gscript.list_strings("region")
+    validate_inputs = run_validation._validate_inputs
+
+    def validate(simulation, interface):
+        try:
+            validate_inputs(simulation, interface)
+        finally:
+            if external_change and simulation.simulation_id == first.simulation_id:
+                environment = os.environ.copy()
+                environment.pop("GRASS_REGION", None)
+                environment.pop("WIND_OVERRIDE", None)
+                gscript.run_command("g.region", n=40, s=0, e=50, w=0, res=10, env=environment)
+
+    monkeypatch.setattr(run_validation, "_validate_inputs", validate)
+    failures = run_validation_worker((first, second))
+    assert "mask excludes the complete" in failures[first.simulation_id]
+    if external_change:
+        assert "domain changed after resolution" in failures[second.simulation_id]
+        gscript.run_command("g.region", n=50, s=0, e=50, w=0, res=10)
+    else:
+        assert second.simulation_id not in failures
+    assert {key: os.environ.get(key) for key in previous} == previous
+    assert gscript.list_strings("raster") == rasters
+    assert gscript.list_strings("region") == saved_regions
+    assert run_validation_worker((second,)) == {}
+
+
 @pytest.mark.usefixtures("grass_5by5")
 def test_worker_rejects_changed_mask_region_and_inputs_after_resolution(tmp_path: Path) -> None:
     from grass.pygrass import utils as gutils
@@ -166,49 +252,40 @@ def test_worker_rejects_changed_mask_region_and_inputs_after_resolution(tmp_path
     try:
         path = write_study(tmp_path, grass={"mask": "stage_mask_values"})
         expanded = load_batch([str(path)])[0][0].simulations
-        resolved = _resolve_ensemble_in_subprocess(expanded)[0]
+        resolved = resolver_worker(expanded)[0]
         assert isinstance(resolved, ResolvedSimulation)
         assert resolved.effective_mask.mode == "explicit"
 
         config = resolved.simulation_config
-        interface = GrassInterface(
-            config.start_time,
-            config.end_time,
-            np.float32,
-            None,
-            "stage_mask_values",
-            resolved.effective_mask,
-        )
-        try:
+        with GrassSessionManager(GrassParams(mask="stage_mask_values")):
+            interface = GrassInterface(config.start_time, config.end_time, np.float32)
             explicit = interface.get_npmask()
-            assert explicit[:, 0].all()
-            assert not explicit[:, 1:].any()  # zero is inside an explicit mask
-            assert np.isfinite(
-                interface.read_raster_map(f"n@{gutils.getenv('MAPSET')}")
-            ).all()  # bypass active MASK
-            interface.mask_mode, interface.mask_source = (
-                "active",
-                f"MASK@{gutils.getenv('MAPSET')}",
-            )
-            active = interface.get_npmask()
-            assert active[:, :2].all()  # zero is outside an active CELL mask
-            assert not active[:, 2:].any()
-        finally:
-            interface.cleanup()
+            assert explicit[:, :2].all()
+            assert not explicit[:, 2:].any()
+            friction = interface.read_raster_map(f"n@{gutils.getenv('MAPSET')}")
+            np.testing.assert_array_equal(np.isnan(friction), explicit)
+            assert np.isfinite(friction[~explicit]).all()
+
+        with GrassSessionManager(GrassParams()):
+            interface = GrassInterface(config.start_time, config.end_time, np.float32)
+            np.testing.assert_array_equal(interface.get_npmask(), explicit)
 
         assert run_validation_worker((resolved,)).get(resolved.simulation_id) is None
         gscript.run_command("r.mask", flags="r")
         assert run_validation_worker((resolved,)).get(resolved.simulation_id) is None
 
         active_path = write_study(tmp_path, grass={})
-        active_resolved = _resolve_ensemble_in_subprocess(
-            load_batch([str(active_path)])[0][0].simulations
-        )[0]
+        active_resolved = resolver_worker(load_batch([str(active_path)])[0][0].simulations)[0]
         assert isinstance(active_resolved, ResolvedSimulation)
         assert active_resolved.effective_mask.mode == "none"
+        assert run_validation_worker((active_resolved,)).get(active_resolved.simulation_id) is None
         gscript.run_command("g.copy", raster="stage_mask_values,MASK")
         assert "effective GRASS mask changed" in (
             run_validation_worker((active_resolved,)).get(active_resolved.simulation_id) or ""
+        )
+        assert resolved_sim_runner_worker(active_resolved) == (
+            "execution_failed",
+            "EnsembleError: effective GRASS mask changed after resolution",
         )
         assert gutils.get_mapset_raster("MASK", gutils.getenv("MAPSET"))
     finally:
@@ -216,32 +293,34 @@ def test_worker_rejects_changed_mask_region_and_inputs_after_resolution(tmp_path
 
     gscript.run_command("g.copy", raster="n,stage_worker_friction")
     path = write_study(tmp_path, input={"friction": "stage_worker_friction"})
-    resolved = _resolve_ensemble_in_subprocess(load_batch([str(path)])[0][0].simulations)[0]
+    resolved = resolver_worker(load_batch([str(path)])[0][0].simulations)[0]
     assert isinstance(resolved, ResolvedSimulation)
 
     gscript.run_command("g.region", n=60)
     assert "GRASS domain changed" in (
         run_validation_worker((resolved,)).get(resolved.simulation_id) or ""
     )
+    assert resolved_sim_runner_worker(resolved) == (
+        "execution_failed",
+        "EnsembleError: GRASS domain changed after resolution",
+    )
     gscript.run_command("g.region", n=50)
     gscript.run_command("g.remove", flags="f", type="raster", name="stage_worker_friction")
     assert "stage_worker_friction" in (
         run_validation_worker((resolved,)).get(resolved.simulation_id) or ""
     )
+    status, detail = resolved_sim_runner_worker(resolved)
+    assert status == "execution_failed"
+    assert detail is not None and "stage_worker_friction" in detail
     assert not (tmp_path / "results").exists()
 
 
-@pytest.mark.forked
-@pytest.mark.usefixtures("grass_5by5")
+@pytest.mark.usefixtures("grass_5by5", "ensemble_in_process")
 def test_dry_run_rejects_raster_outside_domain_without_writing(tmp_path: Path) -> None:
     from grass.pygrass import utils as gutils
 
-    gscript.use_temp_region()
-    try:
-        gscript.run_command("g.region", n=150, s=100, e=150, w=100, res=10)
+    with gscript.RegionManager(n=150, s=100, e=150, w=100, res=10):
         gscript.mapcalc("stage_outside=1")
-    finally:
-        gscript.del_temp_region()
     path = write_study(
         tmp_path,
         input={"friction": "stage_outside"},
@@ -257,8 +336,7 @@ def test_dry_run_rejects_raster_outside_domain_without_writing(tmp_path: Path) -
     assert not gutils.get_mapset_raster("stage_spatial_water_depth_0000", gutils.getenv("MAPSET"))
 
 
-@pytest.mark.forked
-@pytest.mark.usefixtures("grass_5by5")
+@pytest.mark.usefixtures("grass_5by5", "ensemble_in_process")
 def test_ensemble_output_collision_with_input_rejects_all_members(tmp_path: Path) -> None:
     from grass.pygrass import utils as gutils
 
@@ -277,9 +355,22 @@ def test_ensemble_output_collision_with_input_rejects_all_members(tmp_path: Path
     assert not gutils.get_mapset_raster("stage_alias_water_depth_0000", gutils.getenv("MAPSET"))
 
 
-@pytest.mark.forked
 @pytest.mark.usefixtures("grass_5by5")
-def test_yaml_ensemble_runs_in_spawned_resolver_and_worker(test_data_temp_path):
+def test_yaml_ensemble_runs_in_spawned_resolver_and_worker(
+    test_data_temp_path: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pid_directory = tmp_path / "worker_pids"
+    pid_directory.mkdir()
+    monkeypatch.setattr(
+        "itzi.itzi.ProcessPoolExecutor",
+        partial(ProcessPoolExecutor, initializer=_record_worker_pid, initargs=(pid_directory,)),
+    )
+    previous = {
+        key: os.environ.get(key)
+        for key in ("GISRC", "GRASS_REGION", "WIND_OVERRIDE", "GRASS_MASK")
+    }
+    gisrc_contents = Path(os.environ["GISRC"]).read_bytes()
+    previous_region = gscript.region()
     config_path = Path(test_data_temp_path) / "source-file-name.yaml"
     config_path.write_text(
         """\
@@ -310,6 +401,13 @@ outputs:
 
     itzi_run(args)
 
+    worker_pids = {int(path.name) for path in pid_directory.iterdir()}
+    assert worker_pids
+    assert os.getpid() not in worker_pids
+    assert {key: os.environ.get(key) for key in previous} == previous
+    assert Path(os.environ["GISRC"]).read_bytes() == gisrc_contents
+    assert gscript.region() == previous_region
+
     manifest_path = Path(test_data_temp_path) / "results" / "basic.manifest.yaml"
     manifest_text = manifest_path.read_text(encoding="utf-8")
     assert not manifest_text.lstrip().startswith("{")
@@ -337,8 +435,7 @@ outputs:
     )
 
 
-@pytest.mark.forked
-@pytest.mark.usefixtures("grass_5by5")
+@pytest.mark.usefixtures("grass_5by5", "ensemble_in_process")
 def test_failed_ensemble_member_registers_partial_maps(tmp_path: Path) -> None:
     import grass.temporal as tgis
 
@@ -380,7 +477,6 @@ def test_failed_ensemble_member_registers_partial_maps(tmp_path: Path) -> None:
     assert [row["id"] for row in stds.get_registered_maps(columns="id")] == [record_id]
 
 
-@pytest.mark.forked
 @pytest.mark.usefixtures("grass_5by5")
 def test_explicit_grass_context_runs_two_members_without_parent_session(test_data_temp_path):
     context = gscript.gisenv()
@@ -436,8 +532,7 @@ outputs:
     } <= {path.name for path in mapset_path.iterdir()}
 
 
-@pytest.mark.forked
-@pytest.mark.usefixtures("grass_5by5")
+@pytest.mark.usefixtures("grass_5by5", "ensemble_in_process")
 def test_dry_run_validates_multiple_members_in_one_session(tmp_path):
     prefix = f"dry_multi_{uuid4().hex[:8]}"
     config_path = write_study(
@@ -453,8 +548,7 @@ def test_dry_run_validates_multiple_members_in_one_session(tmp_path):
     assert not gscript.list_strings(type="raster", pattern=f"{prefix}_*")
 
 
-@pytest.mark.forked
-@pytest.mark.usefixtures("grass_5by5")
+@pytest.mark.usefixtures("grass_5by5", "ensemble_in_process")
 def test_dry_run_rejects_null_elevation_without_creating_outputs(tmp_path):
     gscript.mapcalc("dry_null_dem=null()")
     config_path = write_study(
@@ -487,29 +581,29 @@ def test_dry_run_rejects_null_elevation_without_creating_outputs(tmp_path):
     assert not gscript.find_file(name="dry_output_water_depth_0000", element="cell").get("file")
 
 
-@pytest.mark.forked
-@pytest.mark.usefixtures("grass_5by5")
-def test_dry_run_does_not_read_rainfall_cells(tmp_path):
+@pytest.mark.usefixtures("grass_5by5", "ensemble_in_process")
+def test_dry_run_does_not_read_rainfall_cells(tmp_path: Path) -> None:
+    import grass.temporal as tgis
+
     gscript.mapcalc("dry_null_rain_0=null()")
     gscript.mapcalc("dry_null_rain_1=1")
-    gscript.run_command(
-        "t.create",
-        output="dry_rain_series",
+    tgis.open_new_stds(
+        name="dry_rain_series",
         type="strds",
         temporaltype="relative",
-        semantictype="mean",
+        semantic="mean",
         title="dry_rain_series",
-        description="dry_rain_series",
+        descr="dry_rain_series",
+        overwrite=gscript.overwrite(),
     )
-    gscript.run_command(
-        "t.register",
-        flags="i",
-        input="dry_rain_series",
+    tgis.register_maps_in_space_time_dataset(
+        name="dry_rain_series",
         type="raster",
         maps="dry_null_rain_0,dry_null_rain_1",
         start="0",
         increment="30",
         unit="seconds",
+        interval=True,
     )
     config_path = write_study(
         tmp_path,
@@ -523,8 +617,7 @@ def test_dry_run_does_not_read_rainfall_cells(tmp_path):
     assert not (tmp_path / "results" / "dry-rain.manifest.yaml").exists()
 
 
-@pytest.mark.forked
-@pytest.mark.usefixtures("grass_5by5")
+@pytest.mark.usefixtures("grass_5by5", "ensemble_in_process")
 def test_dry_run_checks_every_generated_output_record(test_data_temp_path):
     gscript.mapcalc("existing_output_water_depth_0002=1")
     config_path = write_study(
@@ -543,7 +636,6 @@ def test_dry_run_checks_every_generated_output_record(test_data_temp_path):
     )
 
 
-@pytest.mark.forked
 @pytest.mark.usefixtures("grass_xy_session")
 def test_run_validation_accepts_unoccupied_drainage_id():
     from itzi.ensemble.run_validation import _validate_grass_outputs

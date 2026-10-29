@@ -12,8 +12,13 @@ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 GNU General Public License for more details.
 """
 
+from __future__ import annotations
+
+import os
+import tempfile
 from collections.abc import Mapping
-from datetime import datetime
+from datetime import UTC, datetime
+from pathlib import Path
 from time import monotonic
 from typing import TYPE_CHECKING, Literal, Self
 
@@ -21,8 +26,7 @@ import numpy as np
 from itzi_core import SimulationBuilder, SimulationConfig
 
 import itzi.messenger as msgr
-from itzi.ensemble.models import EffectiveMask
-from itzi.grass.session import GrassParams
+from itzi.grass.session import GrassSessionManager
 from itzi.providers.csv_output import ExclusiveCSVMassBalanceOutputProvider
 from itzi.providers.grass_input import GrassRasterInputProvider
 from itzi.providers.grass_output import GrassRasterOutputProvider, GrassVectorOutputProvider
@@ -30,35 +34,34 @@ from itzi.providers.grass_output import GrassRasterOutputProvider, GrassVectorOu
 if TYPE_CHECKING:
     from itzi_core import Simulation
 
+    from itzi.configreader import HotstartRunConfig
     from itzi.grass.interface import GrassInterface
 
 
 class SimulationRunner:
     """Provide the necessary tools to run one simulation.
-    Must be instantiated within an active GRASS session."""
+    Construct, initialize, run, and finalize inside a configured GrassSessionManager."""
 
     def __init__(
         self,
         sim_config: SimulationConfig,
-        grass_params: GrassParams,
         hotstart_path: str | None = None,
         stats_file: str | None = None,
-        effective_mask: EffectiveMask | None = None,
         input_kinds: Mapping[str, Literal["raster", "strds"]] | None = None,
+        hotstart_config: HotstartRunConfig | None = None,
     ) -> None:
+        if GrassSessionManager.current_context() is None:
+            raise RuntimeError("SimulationRunner requires an active GRASS work context")
         from itzi.grass.utils import (
             check_output_files,
-            ensure_min_version,
             get_current_mapset,
             qualify_output_id,
             resolve_input_identifier,
         )
 
-        self.grass_params = grass_params
         self.hotstart_path = hotstart_path
         self.stats_file = stats_file
-        self.effective_mask = effective_mask
-        ensure_min_version()
+        self.hotstart_config = hotstart_config
         if input_kinds is None:
             resolved_inputs = {
                 key: resolve_input_identifier(name)
@@ -101,9 +104,6 @@ class SimulationRunner:
             start_time=self.sim_config.start_time,
             end_time=self.sim_config.end_time,
             dtype=data_type,
-            region_id=self.grass_params.region,
-            raster_mask_id=self.grass_params.mask,
-            effective_mask=self.effective_mask,
         )
         msgr.verbose("Setting up GRASS simulation...")
 
@@ -140,13 +140,13 @@ class SimulationRunner:
         if self.hotstart_path:
             sim_builder.with_hotstart(self.hotstart_path)
         self.sim: Simulation = sim_builder.build()
-        # Initialize the simulation
         self.sim.initialize()
+        self._last_hotstart = monotonic()
         return self
 
-    def run(self):
+    def run(self) -> Self:
         """Run a full simulation"""
-        sim_start_time = datetime.now()
+        sim_start_time = datetime.now(UTC)
         last_progress_update = monotonic() - 0.5
         msgr.verbose("Starting time-stepping...")
         while self.sim.sim_time < self.sim.end_time:
@@ -163,24 +163,40 @@ class SimulationRunner:
             self.step()
         return self
 
-    def finalize(self):
-        """Tear down the simulation and return to previous state."""
+    def finalize(self) -> Self:
+        """Finalize model outputs inside the active work context."""
         self.sim.finalize()
-        # Cleanup the grass interface object
-        if hasattr(self, "g_interface"):
-            self.g_interface.cleanup()
         return self
 
-    def step(self):
+    def step(self) -> Self:
         """Do one simulation step."""
         self.sim.update()
+        if self.hotstart_config is not None:
+            now = monotonic()
+            if now - self._last_hotstart >= self.hotstart_config.wallclock_step.total_seconds():
+                self._write_hotstart(Path(self.hotstart_config.save_file_name))
+                self._last_hotstart = now
         return self
+
+    def _write_hotstart(self, path: Path) -> None:
+        """Replace the checkpoint only after its archive has been fully written."""
+        temporary_path: Path | None = None
+        try:
+            with (
+                self.sim.create_hotstart() as archive,
+                tempfile.NamedTemporaryFile(
+                    dir=path.parent, prefix=f".{path.name}.", delete=False
+                ) as file_obj,
+            ):
+                temporary_path = Path(file_obj.name)
+                file_obj.write(archive.getbuffer())
+                file_obj.flush()
+                os.fsync(file_obj.fileno())
+            temporary_path.replace(path)
+        finally:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
 
     @property
     def origin(self):
         return (self.sim.domain_data.north, self.sim.domain_data.west)
-
-    def __del__(self):
-        # Cleanup the grass interface object
-        if hasattr(self, "g_interface"):
-            self.g_interface.cleanup()

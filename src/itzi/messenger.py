@@ -18,7 +18,7 @@ import logging
 import os
 import sys
 from collections.abc import Callable
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, NoReturn
 
 if TYPE_CHECKING:
@@ -133,7 +133,9 @@ verbose: Callable[[str], None] = _itzi_logger.verbose
 debug: Callable[[str], None] = _itzi_logger.debug
 
 
-def percent(start_time, end_time, sim_time, sim_start_time):
+def percent(
+    start_time: datetime, end_time: datetime, sim_time: datetime, sim_start_time: datetime
+) -> None:
     """Display progress of the simulation"""
     sim_time_s = (sim_time - start_time).total_seconds()
     duration_s = (end_time - start_time).total_seconds()
@@ -143,7 +145,7 @@ def percent(start_time, end_time, sim_time, sim_start_time):
         print(f"{advance_perc:.2%}", file=sys.stderr, end="\r")
 
     elif verbosity() >= VerbosityLevel.MESSAGE:
-        elapsed_s = (datetime.now() - sim_start_time).total_seconds()
+        elapsed_s = (datetime.now(UTC) - sim_start_time).total_seconds()
         try:
             rate = elapsed_s / sim_time_s
         except ZeroDivisionError:

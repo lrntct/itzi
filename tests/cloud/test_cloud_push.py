@@ -216,8 +216,8 @@ def test_absolute_archive_times_match_output_instants(
         ),
     )
     fake_module = types.ModuleType("itzi.grass.interface")
-    fake_module.GrassInterface = lambda **_kwargs: nullcontext(  # type: ignore[attr-defined]
-        types.SimpleNamespace(get_npmask=lambda: np.zeros((5, 5), dtype=bool))
+    fake_module.GrassInterface = lambda **_kwargs: types.SimpleNamespace(  # type: ignore[attr-defined]
+        get_npmask=lambda: np.zeros((5, 5), dtype=bool)
     )
     limits = archive.InputLimits.model_validate(
         dict.fromkeys(archive.InputLimits.model_fields, 1_000_000_000)
@@ -355,8 +355,8 @@ def test_two_member_input_archive(monkeypatch: pytest.MonkeyPatch, tmp_path: Pat
         for i, member in enumerate(ensemble.simulations)
     )
     fake_module = types.ModuleType("itzi.grass.interface")
-    fake_module.GrassInterface = lambda **_kwargs: nullcontext(
-        types.SimpleNamespace(get_npmask=lambda: np.zeros((5, 5), dtype=bool))
+    fake_module.GrassInterface = lambda **_kwargs: types.SimpleNamespace(
+        get_npmask=lambda: np.zeros((5, 5), dtype=bool)
     )
     monkeypatch.setitem(sys.modules, "itzi.grass.interface", None)
 

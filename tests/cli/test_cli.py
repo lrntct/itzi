@@ -3,6 +3,8 @@
 import argparse
 import os
 import sys
+from datetime import timedelta
+from io import StringIO
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import cast
@@ -12,6 +14,7 @@ from itzi_core import DomainData, SimulationConfig
 
 import itzi.messenger as msgr
 from itzi.cli_parser import build_parser
+from itzi.configreader import HotstartRunConfig
 from itzi.ensemble.models import (
     ArtifactSummary,
     EffectiveMask,
@@ -297,24 +300,21 @@ def test_one_ensemble_runs_only_planned_members_and_counts_failures(tmp_path, mo
 def test_run_validation_worker_keeps_member_failures(monkeypatch):
     calls = []
 
-    class FakeGrassSessionManager:
-        def __init__(self, params):
-            assert params == "shared"
-
-        def __enter__(self):
-            calls.append("open")
-
-        def __exit__(self, *_):
-            calls.append("close")
+    def acquire(params, stack):
+        assert params == "shared"
+        calls.append("open")
+        stack.callback(calls.append, "close")
 
     def validate_run_requirements(simulation):
         calls.append(simulation.simulation_id)
         if simulation.simulation_id == "bad":
             raise ValueError("invalid input")
 
-    monkeypatch.setattr("itzi.itzi.GrassSessionManager", FakeGrassSessionManager)
+    monkeypatch.setattr("itzi.itzi._acquire_session", acquire)
     fake_run_validation = ModuleType("itzi.ensemble.run_validation")
-    setattr(fake_run_validation, "validate_run_requirements", validate_run_requirements)
+    monkeypatch.setattr(
+        fake_run_validation, "validate_run_requirements", validate_run_requirements, raising=False
+    )
     monkeypatch.setitem(sys.modules, "itzi.ensemble.run_validation", fake_run_validation)
     simulations = tuple(
         SimpleNamespace(simulation_id=simulation_id, grass_params="shared")
@@ -329,9 +329,9 @@ def test_run_validation_worker_keeps_member_failures(monkeypatch):
 
 @pytest.mark.parametrize("finalize_fails", [False, True])
 def test_failed_ensemble_member_finalizes_in_session_and_reports_error(
-    monkeypatch, itzi_stderr, finalize_fails: bool
+    monkeypatch: pytest.MonkeyPatch, itzi_stderr: StringIO, finalize_fails: bool
 ) -> None:
-    calls = []
+    calls: list[str] = []
 
     class FakeGrassSessionManager:
         def __init__(self, _params):
@@ -345,7 +345,7 @@ def test_failed_ensemble_member_finalizes_in_session_and_reports_error(
 
     class FakeSimulationRunner:
         def __init__(self, *_args, **_kwargs):
-            pass
+            calls.append("create")
 
         def initialize(self):
             return self
@@ -361,13 +361,13 @@ def test_failed_ensemble_member_finalizes_in_session_and_reports_error(
 
     monkeypatch.setattr("itzi.itzi.GrassSessionManager", FakeGrassSessionManager)
     monkeypatch.setattr("itzi.itzi.SimulationRunner", FakeSimulationRunner)
+    monkeypatch.setattr("itzi.itzi.verify_resolved_simulation", lambda *_: calls.append("verify"))
     simulation = cast(
         ResolvedSimulation,
         SimpleNamespace(
             grass_params=None,
             simulation_config=None,
             artifacts=SimpleNamespace(statistics_file=None),
-            effective_mask=None,
             input_kinds=(),
         ),
     )
@@ -376,7 +376,7 @@ def test_failed_ensemble_member_finalizes_in_session_and_reports_error(
         "execution_failed",
         "ValueError: tiny computed dt",
     )
-    assert calls == ["open", "run", "finalize", "close"]
+    assert calls == ["open", "verify", "create", "run", "finalize", "close"]
     stderr = itzi_stderr.getvalue()
     assert stderr.count("WARNING: Simulation failed: ValueError: tiny computed dt") == 1
     assert ("Could not finalize partial outputs: RuntimeError: registration failed" in stderr) == (
@@ -512,9 +512,14 @@ def test_worker_formats_numeric_system_exit_as_status(monkeypatch, itzi_stderr):
     assert "WARNING: Simulation terminated with exit status 1" in itzi_stderr.getvalue()
 
 
-def test_worker_passes_statistics_file_to_simulation_runner(monkeypatch):
+def test_worker_passes_application_output_settings_to_simulation_runner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     sim_params = object()
     grass_params = object()
+    hotstart_config = HotstartRunConfig(
+        wallclock_step=timedelta(seconds=10), save_file_name="checkpoint.zip"
+    )
     runner_arguments = {}
 
     class FakeConfigReader:
@@ -522,6 +527,7 @@ def test_worker_passes_statistics_file_to_simulation_runner(monkeypatch):
             self.sim_config = sim_params
             self.grass_params = grass_params
             self.stats_file = "statistics.csv"
+            self.hotstart_config = hotstart_config
 
     class FakeGrassSessionManager:
         def __init__(self, received_grass_params):
@@ -554,10 +560,11 @@ def test_worker_passes_statistics_file_to_simulation_runner(monkeypatch):
     sim_runner_worker("a.ini", "hotstart.zip")
 
     assert runner_arguments == {
-        "args": (sim_params, grass_params),
+        "args": (sim_params,),
         "kwargs": {
             "hotstart_path": "hotstart.zip",
             "stats_file": "statistics.csv",
+            "hotstart_config": hotstart_config,
         },
     }
 

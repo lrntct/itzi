@@ -22,7 +22,6 @@ from typing import NoReturn
 from itzi_core import (
     INPUT_ARRAY_KEYS,
     OUTPUT_ARRAY_KEYS,
-    HotstartRunConfig,
     InfiltrationModelType,
     SimulationConfig,
     SurfaceFlowParameters,
@@ -81,6 +80,15 @@ GREEN_AMPT_KEYS = (
 )
 GRASS_OPTION_KEYS = ("grassdata", "location", "mapset", "region", "mask", "grass_bin")
 SURFACE_FLOW_OPTION_KEYS = tuple(SurfaceFlowParameters.model_fields)
+
+
+class HotstartRunConfig(BaseModel):
+    """Application settings for periodic checkpoint writing."""
+
+    model_config = ConfigDict(frozen=True)
+
+    wallclock_step: timedelta
+    save_file_name: str | Path
 
 
 def _read_parser(filename: str) -> ConfigParser:
@@ -206,7 +214,7 @@ def _read_output_config(params: ConfigParser) -> tuple[str, list[str], dict[str,
     """Read output settings and derive output map names."""
     prefix = params.get("output", "prefix", fallback=None)
     if prefix is None:
-        prefix = f"itzi_results_{datetime.now().strftime('%Y%m%dT%H%M%S')}"
+        prefix = f"itzi_results_{datetime.now().astimezone().strftime('%Y%m%dT%H%M%S')}"
     output_values = _normalize_output_values(params.get("output", "values", fallback=None))
     output_map_names = _generate_output_map_names(prefix, output_values)
     return prefix, output_values, output_map_names
@@ -274,7 +282,7 @@ class SimulationTimes(BaseModel):
         end = cls._parse_datetime(raw_values["end_time"])
 
         if start is None:
-            start = datetime.min
+            start = datetime.min  # noqa: DTZ901 - core's relative-time sentinel.
         if end is None:
             assert duration is not None
             end: datetime = start + duration
@@ -322,7 +330,7 @@ class SimulationTimes(BaseModel):
             hours = int(hours_str)
             minutes = int(minutes_str)
             seconds = int(seconds_str)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             msgr.fatal(RELATIVE_TIME_ERROR.format(value))
 
         if hours < 0 or not 0 <= minutes <= 59 or not 0 <= seconds <= 59:
@@ -335,7 +343,7 @@ class SimulationTimes(BaseModel):
         if value is None:
             return None
         try:
-            return datetime.strptime(value, TIME_DATE_FORMAT)
+            return datetime.strptime(value, TIME_DATE_FORMAT)  # noqa: DTZ007 - GRASS uses naive times.
         except ValueError:
             msgr.fatal(ABSOLUTE_TIME_ERROR.format(value))
 
@@ -377,7 +385,6 @@ class ConfigReader:
                 end_time=self.sim_times.end,
                 record_step=self.sim_times.record_step,
                 temporal_type=self.sim_times.temporal_type,
-                hotstart_config=self.hotstart_config,
                 input_map_names={
                     key: value for key, value in self.input_map_names.items() if value is not None
                 },

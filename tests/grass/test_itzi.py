@@ -1,5 +1,7 @@
 import os
+from collections.abc import Iterator
 from configparser import ConfigParser
+from contextlib import contextmanager
 from datetime import timedelta
 from uuid import uuid4
 
@@ -13,6 +15,8 @@ from itzi.grass.session import GrassSessionManager
 
 
 def _create_timed_rain_inputs(name_prefix: str) -> dict[str, str]:
+    import grass.temporal as tgis
+
     current_mapset = gscript.read_command("g.mapset", flags="p").rstrip()
     suffix = uuid4().hex[:8]
     zero_depth_map = f"{name_prefix}_start_h_zero_{suffix}"
@@ -27,24 +31,23 @@ def _create_timed_rain_inputs(name_prefix: str) -> dict[str, str]:
     gscript.mapcalc(f"{rain_map_names[0]}=0")
     gscript.mapcalc(f"{rain_map_names[1]}=360")
     gscript.mapcalc(f"{rain_map_names[2]}=360")
-    gscript.run_command(
-        "t.create",
-        output=strds_name,
+    tgis.open_new_stds(
+        name=strds_name,
         type="strds",
         temporaltype="relative",
-        semantictype="mean",
+        semantic="mean",
         title=strds_name,
-        description=strds_name,
+        descr=strds_name,
+        overwrite=gscript.overwrite(),
     )
-    gscript.run_command(
-        "t.register",
-        flags="i",
-        input=strds_name,
+    tgis.register_maps_in_space_time_dataset(
+        name=strds_name,
         type="raster",
         maps=",".join(rain_map_names),
         start="0",
         increment="10",
         unit="seconds",
+        interval=True,
     )
 
     return {
@@ -53,6 +56,7 @@ def _create_timed_rain_inputs(name_prefix: str) -> dict[str, str]:
     }
 
 
+@contextmanager
 def _build_timed_rain_runner(
     test_data_temp_path: str,
     *,
@@ -60,7 +64,7 @@ def _build_timed_rain_runner(
     duration: str,
     record_step: str,
     prefix: str,
-) -> SimulationRunner:
+) -> Iterator[SimulationRunner]:
     current_mapset = gscript.read_command("g.mapset", flags="p").rstrip()
     config_dict = {
         "input": {
@@ -90,15 +94,16 @@ def _build_timed_rain_runner(
         parser.write(file_handle)
 
     conf_data = ConfigReader(config_file)
-    GrassSessionManager.ensure_temporal_initialized()
-    return SimulationRunner(
-        conf_data.sim_config,
-        conf_data.grass_params,
-        stats_file=conf_data.stats_file,
-    ).initialize()
+    with GrassSessionManager(conf_data.grass_params):
+        runner = SimulationRunner(
+            conf_data.sim_config, stats_file=conf_data.stats_file
+        ).initialize()
+        try:
+            yield runner
+        finally:
+            runner.finalize()
 
 
-@pytest.mark.forked
 @pytest.mark.usefixtures("grass_5by5_sim")
 def test_number_of_output():
     current_mapset = gscript.read_command("g.mapset", flags="p").rstrip()
@@ -145,7 +150,6 @@ def test_number_of_output():
     assert len(created_volume_map_list) == 3
 
 
-@pytest.mark.forked
 @pytest.mark.usefixtures("grass_5by5")
 def test_region_mask(test_data_path):
     """Check if temporary mask and region are set and teared down."""
@@ -159,12 +163,12 @@ def test_region_mask(test_data_path):
     conf_data = ConfigReader(config_file)
     sim_params = conf_data.sim_config
     grass_params = conf_data.grass_params
-    sim_runner = SimulationRunner(
-        sim_params,
-        grass_params,
-    )
-    # Run simulation
-    sim_runner.initialize().run().finalize()
+    with GrassSessionManager(grass_params):
+        sim_runner = SimulationRunner(sim_params).initialize()
+        try:
+            sim_runner.run()
+        finally:
+            sim_runner.finalize()
     # Check temporary mask and region
     assert (
         int(gscript.parse_command("r.univar", map="out_5by5_max_flow_speed_0002", flags="g")["n"])
@@ -175,7 +179,6 @@ def test_region_mask(test_data_path):
     assert int(gscript.parse_command("r.univar", map="z", flags="g")["null_cells"]) == init_nulls
 
 
-@pytest.mark.forked
 @pytest.mark.usefixtures("grass_5by5")
 def test_fails_when_region_has_no_dem_data(test_data_temp_path):
     gscript.run_command(
@@ -213,98 +216,105 @@ def test_fails_when_region_has_no_dem_data(test_data_temp_path):
 
     conf_data = ConfigReader(config_file)
 
-    with pytest.raises(
-        RuntimeError, match=r"input map <ground_elevation> contains only NULL/NaN cells"
+    with (
+        pytest.raises(
+            RuntimeError, match=r"input map <ground_elevation> contains only NULL/NaN cells"
+        ),
+        GrassSessionManager(conf_data.grass_params),
     ):
-        SimulationRunner(
-            conf_data.sim_config,
-            conf_data.grass_params,
-            stats_file=conf_data.stats_file,
-        ).initialize()
+        SimulationRunner(conf_data.sim_config, stats_file=conf_data.stats_file).initialize()
 
 
-@pytest.mark.forked
 @pytest.mark.usefixtures("grass_5by5")
 @pytest.mark.parametrize("temporal_type", ["relative", "absolute"])
-def test_empty_strds_fails_with_clear_error(test_data_temp_path, temporal_type: str):
+def test_empty_strds_fails_with_clear_error(test_data_temp_path: str, temporal_type: str) -> None:
+    import grass.temporal as tgis
+
     current_mapset = gscript.read_command("g.mapset", flags="p").rstrip()
     strds_name = f"empty_{temporal_type}_rain_{uuid4().hex[:8]}"
-    gscript.run_command(
-        "t.create",
-        output=strds_name,
+    tgis.open_new_stds(
+        name=strds_name,
         type="strds",
         temporaltype=temporal_type,
-        semantictype="mean",
+        semantic="mean",
         title=strds_name,
-        description=strds_name,
+        descr=strds_name,
+        overwrite=gscript.overwrite(),
     )
 
     input_names = {
         "rainfall_rate": f"{strds_name}@{current_mapset}",
         "water_depth": f"start_h@{current_mapset}",
     }
-    with pytest.raises(
-        RuntimeError,
-        match=rf"STRDS <{strds_name}@{current_mapset}> has no temporal extent",
-    ):
+    with (
+        pytest.raises(
+            RuntimeError,
+            match=rf"STRDS <{strds_name}@{current_mapset}> has no temporal extent",
+        ),
         _build_timed_rain_runner(
             test_data_temp_path,
             input_names=input_names,
             duration="00:00:20",
             record_step="00:00:20",
             prefix=f"out_empty_{temporal_type}_{uuid4().hex[:8]}",
-        )
+        ),
+    ):
+        pass
 
 
-@pytest.mark.forked
 @pytest.mark.usefixtures("grass_5by5")
-def test_relative_strds_with_unsupported_unit_fails_with_clear_error(test_data_temp_path):
+def test_relative_strds_with_unsupported_unit_fails_with_clear_error(
+    test_data_temp_path: str,
+) -> None:
+    import grass.temporal as tgis
+
     current_mapset = gscript.read_command("g.mapset", flags="p").rstrip()
     suffix = uuid4().hex[:8]
     strds_name = f"monthly_rain_{suffix}"
     rain_map_name = f"monthly_rain_map_{suffix}"
     gscript.mapcalc(f"{rain_map_name}=10")
-    gscript.run_command(
-        "t.create",
-        output=strds_name,
+    tgis.open_new_stds(
+        name=strds_name,
         type="strds",
         temporaltype="relative",
-        semantictype="mean",
+        semantic="mean",
         title=strds_name,
-        description=strds_name,
+        descr=strds_name,
+        overwrite=gscript.overwrite(),
     )
-    gscript.run_command(
-        "t.register",
-        flags="i",
-        input=strds_name,
+    tgis.register_maps_in_space_time_dataset(
+        name=strds_name,
         type="raster",
         maps=rain_map_name,
         start="0",
         increment="1",
         unit="months",
+        interval=True,
     )
 
     input_names = {
         "rainfall_rate": f"{strds_name}@{current_mapset}",
         "water_depth": f"start_h@{current_mapset}",
     }
-    with pytest.raises(
-        RuntimeError,
-        match=(
-            rf"STRDS <{strds_name}@{current_mapset}> uses unsupported relative time unit "
-            r"<months>"
+    with (
+        pytest.raises(
+            RuntimeError,
+            match=(
+                rf"STRDS <{strds_name}@{current_mapset}> uses unsupported relative time unit "
+                r"<months>"
+            ),
         ),
-    ):
         _build_timed_rain_runner(
             test_data_temp_path,
             input_names=input_names,
             duration="00:00:20",
             record_step="00:00:20",
             prefix=f"out_monthly_relative_{uuid4().hex[:8]}",
-        )
+        ),
+    ):
+        pass
 
 
-@pytest.mark.forked
 @pytest.mark.usefixtures("grass_5by5")
 @pytest.mark.parametrize(
     ("target_seconds", "expected_rain_mm_per_hour", "expected_input_deadline_seconds"),
@@ -321,15 +331,13 @@ def test_timed_grass_rain_switches_cleanly_around_boundary(
     expected_input_deadline_seconds: int,
 ):
     input_names = _create_timed_rain_inputs("timed_boundary")
-    sim_runner = _build_timed_rain_runner(
+    with _build_timed_rain_runner(
         test_data_temp_path,
         input_names=input_names,
         duration="00:00:20",
         record_step="00:00:20",
         prefix=f"out_timed_boundary_{target_seconds}_{uuid4().hex[:8]}",
-    )
-
-    try:
+    ) as sim_runner:
         simulation = sim_runner.sim
         simulation.update_until(timedelta(seconds=target_seconds))
 
@@ -340,23 +348,18 @@ def test_timed_grass_rain_switches_cleanly_around_boundary(
         assert simulation.next_ts["input"] == simulation.start_time + timedelta(
             seconds=expected_input_deadline_seconds
         )
-    finally:
-        sim_runner.g_interface.cleanup()
 
 
-@pytest.mark.forked
 @pytest.mark.usefixtures("grass_5by5")
 def test_timed_grass_rain_is_applied_before_a_step_crosses_its_boundary(test_data_temp_path):
     input_names = _create_timed_rain_inputs("timed_crossing")
-    sim_runner = _build_timed_rain_runner(
+    with _build_timed_rain_runner(
         test_data_temp_path,
         input_names=input_names,
         duration="00:00:20",
         record_step="00:00:15",
         prefix=f"out_timed_crossing_{uuid4().hex[:8]}",
-    )
-
-    try:
+    ) as sim_runner:
         simulation = sim_runner.sim
         simulation.update()
 
@@ -370,5 +373,3 @@ def test_timed_grass_rain_is_applied_before_a_step_crosses_its_boundary(test_dat
             simulation.raster_domain.get_array("rainfall_rate"),
             360.0 / (1000 * 3600),
         )
-    finally:
-        sim_runner.g_interface.cleanup()

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #
 # Itzï documentation build configuration file, created by
 # sphinx-quickstart on Sun May 14 22:26:16 2017.

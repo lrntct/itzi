@@ -8,7 +8,6 @@ from pathlib import Path
 
 import grass.script as gscript
 import numpy as np
-import pytest
 from pyproj import CRS
 
 from itzi.cloud import archive
@@ -18,7 +17,6 @@ from itzi.ensemble.resolution import resolve_ensemble
 from itzi.grass.session import GrassSessionManager
 
 
-@pytest.mark.forked
 def test_yaml_cloud_archive_from_grass(grass_5by5, tmp_path: Path, caplog) -> None:
     GrassSessionManager.ensure_temporal_initialized()
     gscript.mapcalc("cloud_rain0=1")

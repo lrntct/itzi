@@ -15,6 +15,7 @@ GNU General Public License for more details.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from ctypes import byref, create_string_buffer
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, NamedTuple
@@ -23,8 +24,9 @@ import grass.pygrass.utils as gutils
 import grass.script as gscript
 import grass.temporal as tgis
 import numpy as np
+from grass.lib import gis as libgis
+from grass.lib import raster as libraster
 from grass.pygrass.gis import Mapset
-from grass.pygrass.gis.region import Region
 from itzi_core import INPUT_ARRAY_KEYS, DomainData
 
 import itzi.messenger as msgr
@@ -33,9 +35,6 @@ from itzi.grass.session import GrassParams
 
 if TYPE_CHECKING:
     from itzi.grass.interface import GrassInterface
-
-MIN_GRASS_VERSION = (8, 4)
-
 
 type STDSType = Literal["strds", "stvds"]
 type RasterMapType = Literal["CELL", "FCELL", "DCELL"]
@@ -71,16 +70,23 @@ def check_output_files(file_list: list[str]) -> None:
 
 
 def resolve_effective_mask(mask: str | None) -> EffectiveMask:
-    """Select the effective mask descriptor without modifying the mapset MASK."""
-    current_mapset = gutils.getenv("MAPSET")
+    """Select the configured or active GRASS mask without changing it."""
     if mask is not None:
         name, requested_mapset = split_identifier(mask)
         mapset = gutils.get_mapset_raster(name, requested_mapset or "")
         if not mapset:
             raise EnsembleError(f"explicit mask {mask!r} was not found")
         return EffectiveMask("explicit", f"{name}@{mapset}")
-    if gutils.get_mapset_raster("MASK", current_mapset):
-        return EffectiveMask("active", f"MASK@{current_mapset}")
+    name = create_string_buffer(libgis.GNAME_MAX)
+    mapset = create_string_buffer(libgis.GMAPSET_MAX)
+    if libraster.Rast_mask_status(
+        name,
+        mapset,
+        None,
+        create_string_buffer(libgis.GNAME_MAX),
+        create_string_buffer(libgis.GMAPSET_MAX),
+    ):
+        return EffectiveMask("active", f"{name.value.decode()}@{mapset.value.decode()}")
     return EffectiveMask("none", None)
 
 
@@ -121,16 +127,6 @@ def name_is_map(map_id: str) -> bool:
     return raster_exists(name, mapset)
 
 
-def ensure_min_version() -> None:
-    full = gscript.parse_command("g.version", flags="g")["version"]
-    major, minor = (int(part) for part in full.split(".")[:2])
-    if (major, minor) < MIN_GRASS_VERSION:
-        required = f"{MIN_GRASS_VERSION[0]}.{MIN_GRASS_VERSION[1]}"
-        raise RuntimeError(
-            f"itzi requires at least GRASS {required}, found version {major}.{minor}"
-        )
-
-
 def active_grass_params(requested: GrassParams) -> GrassParams:
     """Return the active session context, retaining requested region/mask/bin."""
     return GrassParams(
@@ -143,30 +139,23 @@ def active_grass_params(requested: GrassParams) -> GrassParams:
     )
 
 
-def read_domain(region_id: str | None) -> DomainData:
-    """Read the selected computational region without leaving it changed."""
+def read_domain() -> DomainData:
+    """Read the active work window without reloading the mapset's default."""
     if gscript.locn_is_latlong():
         raise EnsembleError("latlong locations are not supported")
-    using_temp_region = region_id is not None
-    if using_temp_region:
-        gscript.use_temp_region()
-        gscript.run_command("g.region", region=region_id)
-    try:
-        region = Region()
-        if region.cols < 3 or region.rows < 3:
-            raise EnsembleError("GRASS Region should be at least 3 cells by 3 cells")
-        return DomainData(
-            north=region.north,
-            south=region.south,
-            east=region.east,
-            west=region.west,
-            rows=region.rows,
-            cols=region.cols,
-            crs_wkt=get_crs_wkt(),
-        )
-    finally:
-        if using_temp_region:
-            gscript.del_temp_region()
+    region = libgis.Cell_head()
+    libgis.G_get_set_window(byref(region))
+    if region.cols < 3 or region.rows < 3:
+        raise EnsembleError("GRASS Region should be at least 3 cells by 3 cells")
+    return DomainData(
+        north=region.north,
+        south=region.south,
+        east=region.east,
+        west=region.west,
+        rows=region.rows,
+        cols=region.cols,
+        crs_wkt=get_crs_wkt(),
+    )
 
 
 def split_identifier(identifier: str) -> tuple[str, str]:
@@ -275,3 +264,17 @@ def resolve_input_map_lists(
             map_list = [MapData(id=map_name, start_time=start_time, end_time=end_time)]
         map_lists[key] = map_list
     return map_lists
+
+
+def set_colors(raster_id: str, mapset: str, colors_rules: str, map_type: RasterMapType) -> None:
+    colors = libraster.struct_Colors()
+    libraster.Rast_init_colors(byref(colors))
+    try:
+        # shortcut: shipped rules use absolute values, read the raster range for % rules.
+        if not libraster.Rast_load_fp_colors(byref(colors), colors_rules, 0.0, 0.0):
+            raise RuntimeError(f"Unable to load color rules <{colors_rules}>")
+        if map_type != "CELL":
+            libraster.Rast_mark_colors_as_fp(byref(colors))
+        libraster.Rast_write_colors(raster_id, mapset, byref(colors))
+    finally:
+        libraster.Rast_free_colors(byref(colors))
