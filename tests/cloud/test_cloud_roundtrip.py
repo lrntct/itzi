@@ -1095,7 +1095,10 @@ def _fake_archive(
 def test_cloud_push_creates_and_resumes_each_document(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, fake_cloud_server: FakeCloudServer
 ) -> None:
-    from itzi.cloud import archive
+    from itzi.cloud import archive, push
+
+    messages: list[str] = []
+    monkeypatch.setattr(push.msgr, "message", messages.append)
 
     ctx = _configure_cloud_test_environment(monkeypatch, tmp_path, fake_cloud_server)
     itzi_cloud_login(
@@ -1154,6 +1157,13 @@ def test_cloud_push_creates_and_resumes_each_document(
         {"name": "study-1", "description": "Flood study"},
     ]
     assert [body for _, body, _ in fake_cloud_server.state.uploads] == list(payloads)
+    assert all(
+        headers["content-length"] == str(len(body)) and "transfer-encoding" not in headers
+        for _, body, headers in fake_cloud_server.state.uploads
+    )
+    assert any("upload complete" in message for message in messages)
+    assert any("upload confirmed" in message for message in messages)
+    assert any("2/2 runs requested" in message for message in messages)
     assert [item[1] for item in fake_cloud_server.state.upload_instruction_requests] == [
         {
             "size_bytes": len(payload),
@@ -1186,7 +1196,14 @@ def test_cloud_push_creates_and_resumes_each_document(
         )
     )
 
+    messages.clear()
     itzi_cloud_push(args)
+    assert any("reusing Ensemble ensemble-1" in message for message in messages)
+    assert any("upload already confirmed" in message for message in messages)
+    assert any("Run run-simulation-input-1-0 already requested" in message for message in messages)
+    assert not any(
+        "uploading —" in message or "creating cloud Ensemble" in message for message in messages
+    )
     assert len(fake_cloud_server.state.ensemble_creates) == 2
     assert len(fake_cloud_server.state.uploads) == 2
     assert len(fake_cloud_server.state.confirm_requests) == 2
@@ -1493,7 +1510,10 @@ def test_cloud_upload_failure_resumes_safely(
     stage: str | None,
     message: str,
 ) -> None:
-    from itzi.cloud import archive
+    from itzi.cloud import archive, push
+
+    messages: list[str] = []
+    monkeypatch.setattr(push.msgr, "message", messages.append)
 
     ctx = _configure_cloud_test_environment(monkeypatch, tmp_path, fake_cloud_server)
     itzi_cloud_login(
@@ -1509,6 +1529,8 @@ def test_cloud_upload_failure_resumes_safely(
     args = argparse.Namespace(project="proj-public", config_file=[str(config)])
     with pytest.raises(FatalError, match=message):
         itzi_cloud_push(args)
+    assert any("upload complete" in text for text in messages) == (stage == "uploaded")
+    assert not any("push complete" in text or "upload confirmed" in text for text in messages)
     metadata_path = ctx.metadata_storage.get_metadata_file_path()
     draft = next(iter(json.loads(metadata_path.read_text())["ensembles"].values()))
     assert draft["upload_stage"] == stage
@@ -1617,6 +1639,45 @@ def test_cloud_push_waits_for_accepted_member_mapping(
     assert len(state.simulation_puts) == len(state.run_requests) == 1
 
 
+def test_cloud_push_reports_validation_state_changes_and_wait_heartbeat(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, fake_cloud_server: FakeCloudServer
+) -> None:
+    from itzi.cloud import archive, push
+
+    ctx = _configure_cloud_test_environment(monkeypatch, tmp_path, fake_cloud_server)
+    itzi_cloud_login(
+        argparse.Namespace(email="user@example.com", password="secret", logout=False, status=False)
+    )
+    path = tmp_path / "input.tzst"
+    path.write_bytes(b"input")
+    built = _fake_archive(path, tmp_path / "study.yaml", ctx.grass_params)
+    monkeypatch.setattr(archive, "build_archives", lambda *_: (built,))
+    messages: list[str] = []
+    monkeypatch.setattr(push.msgr, "message", messages.append)
+    state = fake_cloud_server.state
+    state.validation_state = "uploading"
+    elapsed = 0.0
+
+    def advance_clock(seconds: float) -> None:
+        nonlocal elapsed
+        elapsed += seconds
+        state.validation_state = "accepted" if elapsed >= 12 else "validating"
+
+    monkeypatch.setattr(push.time, "monotonic", lambda: elapsed)
+    monkeypatch.setattr(push.time, "sleep", advance_clock)
+    itzi_cloud_push(argparse.Namespace(project="proj-public", config_file=["study.yaml"]))
+
+    assert [text for text in messages if "s elapsed" in text] == [
+        "Input input-1: uploading — 0 s elapsed",
+        "Input input-1: validating — 2 s elapsed",
+        "Input input-1: validating — 8 s elapsed",
+    ]
+    assert elapsed == 12
+    assert messages.index("Input input-1: accepted, 1 members") < next(
+        index for index, text in enumerate(messages) if "creating Simulation" in text
+    )
+
+
 @pytest.mark.parametrize(
     "failure", ["fail_simulation", "lose_simulation_response", "fail_run", "lose_run_response"]
 )
@@ -1626,7 +1687,11 @@ def test_cloud_push_resumes_failed_member_and_replays_run_key(
     fake_cloud_server: FakeCloudServer,
     failure: str,
 ) -> None:
-    from itzi.cloud import archive
+    from itzi.cloud import archive, push
+
+    messages: list[str] = []
+    monkeypatch.setattr(push.msgr, "message", messages.append)
+    monkeypatch.setattr(push.msgr, "warning", messages.append)
 
     ctx = _configure_cloud_test_environment(monkeypatch, tmp_path, fake_cloud_server)
     itzi_cloud_login(
@@ -1642,6 +1707,10 @@ def test_cloud_push_resumes_failed_member_and_replays_run_key(
     args = argparse.Namespace(project="proj-public", config_file=[str(built.ensemble.source.path)])
     with pytest.raises(FatalError, match="member 0.*Retry cloud push"):
         itzi_cloud_push(args)
+    assert next(
+        index for index, text in enumerate(messages) if "member 0" in text and "failed:" in text
+    ) < next(index for index, text in enumerate(messages) if "1/2 runs requested" in text)
+    assert not any("push complete" in text or "2/2 runs requested" in text for text in messages)
     metadata_path = ctx.metadata_storage.get_metadata_file_path()
     draft = next(iter(json.loads(metadata_path.read_text())["ensembles"].values()))
     assert draft["run_ids"] == {"1": "run-simulation-input-1-1"}
@@ -1668,6 +1737,9 @@ def test_cloud_push_retries_until_result_repository_is_sealed(
 ) -> None:
     from itzi.cloud import archive, push
 
+    messages: list[str] = []
+    monkeypatch.setattr(push.msgr, "message", messages.append)
+
     ctx = _configure_cloud_test_environment(monkeypatch, tmp_path, fake_cloud_server)
     itzi_cloud_login(
         argparse.Namespace(email="user@example.com", password="secret", logout=False, status=False)
@@ -1690,7 +1762,10 @@ def test_cloud_push_retries_until_result_repository_is_sealed(
     ]
     assert len({key for _, key, _ in state.run_requests[:3]}) == 1
     assert all(token == "token-1" for _, _, token in state.run_requests)
+    assert len([text for text in messages if "waiting for result repository" in text]) == 1
+    messages.clear()
     itzi_cloud_push(args)
+    assert not any("waiting for result repository" in text for text in messages)
     assert len(state.simulation_puts) == 2
     assert len(state.run_requests) == 4
 
@@ -1704,6 +1779,9 @@ def test_cloud_push_repository_failure_preserves_progress_and_resumes(
     failure: str,
 ) -> None:
     from itzi.cloud import archive, push
+
+    messages: list[str] = []
+    monkeypatch.setattr(push.msgr, "message", messages.append)
 
     ctx = _configure_cloud_test_environment(monkeypatch, tmp_path, fake_cloud_server)
     itzi_cloud_login(
@@ -1756,6 +1834,11 @@ def test_cloud_push_repository_failure_preserves_progress_and_resumes(
     assert draft["run_ids"] == {"0": "run-simulation-input-1-0"}
     assert elapsed == (10 if failure == "pending" else 0)
     assert sleeps == ([2] * 5 if failure == "pending" else [])
+    waits = [text for text in messages if "waiting for result repository" in text]
+    assert len(waits) == (2 if failure == "pending" else 0)
+    if waits:
+        assert waits[0].endswith("0 s elapsed")
+        assert waits[1].endswith("6 s elapsed")
     requests_before_resume = 6 if failure == "pending" else 2
     assert len(state.run_requests) == requests_before_resume
     if failure != "pending":

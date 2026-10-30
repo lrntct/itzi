@@ -195,6 +195,11 @@ def build_archives(path: str | Path, session_token: str) -> tuple[BuiltArchive, 
         raise ValueError("YAML stream contains no ensembles")
     resolved: list[tuple[ExpandedEnsemble, tuple[ResolvedSimulation, ...]]] = []
     for ensemble in stream.ensembles:
+        msgr.message(
+            f"{ensemble.source.path} document {ensemble.source.document_index}: "
+            f"resolving GRASS inputs for {ensemble.ensemble_id}, "
+            f"{len(ensemble.simulations)} members…"
+        )
         cloud_members = tuple(
             replace(member, drainage=None, outputs=OutputTemplates(None, (), None, None))
             for member in ensemble.simulations
@@ -213,6 +218,7 @@ def build_archives(path: str | Path, session_token: str) -> tuple[BuiltArchive, 
                 tuple(result for result in results if isinstance(result, ResolvedSimulation)),
             )
         )
+    msgr.message(f"{path}: checking cloud input format and limits…")
     capability = get_input_format(session_token)
     archives: list[BuiltArchive] = []
     try:
@@ -329,7 +335,8 @@ def _dataset(
         ds["MASK"] = (("y", "x"), interface.get_npmask(), {"dtype": "bool"})
         assert first.grass_params.grassdata is not None and first.grass_params.location is not None
         grass_project = Path(first.grass_params.grassdata) / first.grass_params.location
-        for (identifier, kind), name in sources.items():
+        for index, ((identifier, kind), name) in enumerate(sources.items(), start=1):
+            msgr.message(f"Reading input {index}/{len(sources)}: {identifier} ({kind})…")
             map_name, mapset = identifier.split("@", 1)
             opened = xr.open_dataset(
                 grass_project / mapset,
@@ -459,6 +466,7 @@ def build_archive(
         raise ValueError("All expanded members must resolve before building an Input")
     limits = capability.limits
     _warn_omissions(ensemble)
+    msgr.message(f"{ensemble.ensemble_id}: reading inputs for the archive…")
     ds = _dataset(simulations, limits, ensemble.simulations[0].time)
     encoding = _encoding(ds, limits)
     owned = destination is None
@@ -480,6 +488,7 @@ def build_archive(
         return info
 
     try:
+        msgr.message(f"{ensemble.ensemble_id}: writing and compressing input archive…")
         with tempfile.TemporaryDirectory(prefix="itzi-zarr-") as temp:
             zarr_path = Path(temp) / "input.zarr"
             with warnings.catch_warnings():
@@ -504,8 +513,13 @@ def build_archive(
             ) as tar:
                 tar.add(zarr_path, arcname="input.zarr", filter=filter_entry)
         _check_limit(path.stat().st_size, limits.INPUT_MAX_ARCHIVE_BYTES, "archive bytes")
+        msgr.message(f"{ensemble.ensemble_id}: computing archive checksum…")
         with path.open("rb") as file:
             sha256 = hashlib.file_digest(file, "sha256").hexdigest()
+        msgr.message(
+            f"{ensemble.ensemble_id}: archive ready, "
+            f"{path.stat().st_size / 1024**2:.1f} MiB ({path.stat().st_size:,} bytes)"
+        )
         return BuiltArchive(
             ensemble,
             path,

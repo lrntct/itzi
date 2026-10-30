@@ -147,6 +147,7 @@ def test_itzi_cloud_push_creates_ensemble_draft(monkeypatch: pytest.MonkeyPatch)
                     path=Path("/tmp/input.tzst"),
                     size_bytes=42,
                     sha256="a" * 64,
+                    simulations=(SimpleNamespace(),),
                 ),
             )
         ),
@@ -181,7 +182,10 @@ def test_itzi_cloud_push_creates_ensemble_draft(monkeypatch: pytest.MonkeyPatch)
         ),
         (Path("/tmp/input.tzst"), "input-1", "token"),
     ]
-    assert "Ensemble ensemble-1, Input input-1 accepted; runs: 0=run-1" in messages[0]
+    assert messages[0] == "one.yml: validating configuration and preparing cloud inputs…"
+    assert "push complete — 1/1 runs requested" in messages[-1]
+    assert "Ensemble ensemble-1, Input input-1 accepted; runs: 0=run-1" in messages[-1]
+    assert "itzi cloud status ensemble-1" in messages[-1]
 
 
 @pytest.mark.parametrize("ensemble_id", [None, "ensemble-123"])

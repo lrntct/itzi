@@ -20,11 +20,13 @@ import sys
 import time
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from io import BufferedReader, FileIO
 from typing import Literal
 
 import requests
 from itzi_core import TemporalType
 
+import itzi.messenger as msgr
 from itzi.cloud import urls
 from itzi.cloud.archive import BuiltArchive, source_names
 from itzi.cloud.metadata_storage import (
@@ -47,6 +49,33 @@ VALIDATION_WAIT_SECONDS = 60
 VALIDATION_POLL_SECONDS = 2
 RESULT_REPOSITORY_WAIT_SECONDS = 10
 RESULT_REPOSITORY_POLL_SECONDS = 2
+PROGRESS_REPORT_SECONDS = 5
+
+
+class _UploadReader(BufferedReader):
+    """Report transfer progress while preserving the file's length and seek support."""
+
+    def __init__(self, archive: BuiltArchive, input_id: str) -> None:
+        super().__init__(FileIO(archive.path, "rb"))
+        self._size_bytes = archive.size_bytes
+        self._input_id = input_id
+        self._last_report = time.monotonic()
+
+    def read(self, size: int | None = -1, /) -> bytes:
+        chunk = super().read(size)
+        now = time.monotonic()
+        sent = self.tell()
+        if (
+            chunk
+            and sent < self._size_bytes
+            and now - self._last_report >= PROGRESS_REPORT_SECONDS
+        ):
+            msgr.message(
+                f"Input {self._input_id}: uploading — "
+                f"{sent:,}/{self._size_bytes:,} bytes ({sent / self._size_bytes:.0%})"
+            )
+            self._last_report = now
+        return chunk
 
 
 def create_ensemble(
@@ -67,6 +96,9 @@ def create_ensemble(
         force=force,
     )
     if draft.ensemble_id is not None and draft.input_id is not None:
+        msgr.message(
+            f"{archive.ensemble.ensemble_id}: checking saved Ensemble {draft.ensemble_id}…"
+        )
         response = requests.get(
             urls.get_input_endpoint(draft.input_id),
             headers={"X-Session-Token": session_token},
@@ -74,9 +106,12 @@ def create_ensemble(
         )
         if response.status_code != 404:
             response.raise_for_status()
+            msgr.message(f"{archive.ensemble.ensemble_id}: reusing Ensemble {draft.ensemble_id}")
             return draft
+        msgr.message(f"Saved Ensemble {draft.ensemble_id} no longer exists; recreating…")
         draft = reset_ensemble_draft(draft)
 
+    msgr.message(f"{archive.ensemble.ensemble_id}: creating cloud Ensemble…")
     response = requests.post(
         urls.get_ensembles_endpoint(project_id),
         headers={"X-Session-Token": session_token, "Idempotency-Key": draft.idempotency_key},
@@ -96,6 +131,7 @@ def create_ensemble(
         update={"ensemble_id": created.ensemble_id, "input_id": created.input_id}
     )
     save_ensemble_draft(draft)
+    msgr.message(f"Ensemble {draft.ensemble_id} ready, Input {draft.input_id}")
     return draft
 
 
@@ -146,20 +182,25 @@ def upload_input(archive: BuiltArchive, draft: EnsembleDraft, session_token: str
     if draft.input_id is None:
         raise ValueError("Create the Ensemble before uploading its Input")
     if draft.upload_stage == "confirmed":
+        msgr.message(f"Input {draft.input_id}: upload already confirmed; reusing it")
         return draft
 
     input_url = urls.get_input_endpoint(draft.input_id)
     headers = {"X-Session-Token": session_token}
     if draft.upload_stage is not None:
+        msgr.message(f"Input {draft.input_id}: checking saved upload on the server…")
         state = _confirmed_on_server(draft, session_token, archive)
         if state is not None:
+            msgr.message(f"Input {draft.input_id}: upload already confirmed on server ({state})")
             return _record_upload(draft, "confirmed", draft.transfer_id or "", state)
 
     if draft.upload_stage == "uploaded":
         if draft.transfer_id is None:
             raise ValueError("Uploaded Input has no saved transfer ID")
         transfer_id = draft.transfer_id
+        msgr.message(f"Input {draft.input_id}: archive already uploaded; resuming confirmation")
     else:
+        msgr.message(f"Input {draft.input_id}: checking archive checksums…")
         md5 = hashlib.md5()  # API checksum contract
         sha256 = hashlib.sha256()
         with archive.path.open("rb") as file:
@@ -168,6 +209,7 @@ def upload_input(archive: BuiltArchive, draft: EnsembleDraft, session_token: str
                 sha256.update(chunk)
         if sha256.hexdigest() != archive.sha256:
             raise ValueError("Archive SHA-256 changed since building the Input")
+        msgr.message(f"Input {draft.input_id}: requesting upload instructions…")
         response = requests.post(
             f"{input_url}/upload-instructions",
             headers=headers,
@@ -195,8 +237,9 @@ def upload_input(archive: BuiltArchive, draft: EnsembleDraft, session_token: str
             for key, value in instruction.headers.items()
         ):
             raise ValueError("Signed upload Content-Type does not match application/zstd")
+        msgr.message(f"Input {draft.input_id}: uploading — 0/{archive.size_bytes:,} bytes (0%)")
         try:
-            with archive.path.open("rb") as file:
+            with _UploadReader(archive, draft.input_id) as file:
                 put = requests.put(
                     instruction.url,
                     headers={"Content-Type": "application/zstd", **instruction.headers},
@@ -208,9 +251,14 @@ def upload_input(archive: BuiltArchive, draft: EnsembleDraft, session_token: str
             raise ValueError(
                 f"Signed upload failed; retry cloud push ({type(error).__name__})"
             ) from error
+        msgr.message(
+            f"Input {draft.input_id}: upload complete — "
+            f"{archive.size_bytes:,}/{archive.size_bytes:,} bytes (100%)"
+        )
         draft = _record_upload(draft, "uploaded", instruction.transfer_id)
         transfer_id = instruction.transfer_id
 
+    msgr.message(f"Input {draft.input_id}: confirming upload…")
     response = requests.post(
         f"{input_url}/confirm",
         headers=headers,
@@ -224,11 +272,13 @@ def upload_input(archive: BuiltArchive, draft: EnsembleDraft, session_token: str
     if response.status_code == 409:
         state = _confirmed_on_server(draft, session_token, archive)
         if state is not None:
+            msgr.message(f"Input {draft.input_id}: upload already confirmed on server ({state})")
             return _record_upload(draft, "confirmed", transfer_id, state)
     response.raise_for_status()
     confirmation = InputConfirmationSchema.model_validate(response.json())
     if confirmation.input_id != draft.input_id:
         raise ValueError("Upload confirmation refers to another Input")
+    msgr.message(f"Input {draft.input_id}: upload confirmed (server state: {confirmation.state})")
     return _record_upload(draft, "confirmed", transfer_id, confirmation.state)
 
 
@@ -237,7 +287,11 @@ def wait_for_input(draft: EnsembleDraft, session_token: str) -> EnsembleDraft:
     if draft.input_id is None or draft.upload_stage != "confirmed":
         raise ValueError("Confirm the Input before checking validation")
     input_url = urls.get_input_endpoint(draft.input_id)
-    deadline = time.monotonic() + VALIDATION_WAIT_SECONDS
+    msgr.message(f"Input {draft.input_id}: waiting for server validation…")
+    started = time.monotonic()
+    deadline = started + VALIDATION_WAIT_SECONDS
+    last_report = started
+    last_state: str | None = None
     while True:
         response = requests.get(
             input_url,
@@ -272,8 +326,14 @@ def wait_for_input(draft: EnsembleDraft, session_token: str) -> EnsembleDraft:
             expected = list(enumerate(draft.member_labels))
             if actual != expected:
                 raise ValueError(f"Input {draft.input_id} member mapping differs from local order")
+            msgr.message(f"Input {draft.input_id}: accepted, {len(status.members)} members")
             return draft
-        if time.monotonic() >= deadline:
+        now = time.monotonic()
+        if status.state != last_state or now - last_report >= PROGRESS_REPORT_SECONDS:
+            msgr.message(f"Input {draft.input_id}: {status.state} — {now - started:.0f} s elapsed")
+            last_report = now
+            last_state = status.state
+        if now >= deadline:
             raise TimeoutError(
                 f"Input {draft.input_id} is {status.state}; validation still pending. "
                 "Retry cloud push to resume."
@@ -306,7 +366,9 @@ def _request_run(
     simulation_id: str, ensemble_id: str, headers: dict[str, str]
 ) -> RunResponseSchema:
     """Retry a Run request while its result repository is being sealed."""
-    deadline = time.monotonic() + RESULT_REPOSITORY_WAIT_SECONDS
+    started = time.monotonic()
+    deadline = started + RESULT_REPOSITORY_WAIT_SECONDS
+    last_report = started - PROGRESS_REPORT_SECONDS
     while True:
         response = requests.post(
             urls.get_runs_endpoint(simulation_id),
@@ -324,7 +386,14 @@ def _request_run(
                 and failure.code == "result_repository_not_sealed"
                 and failure.next_action == "wait_for_result_repository"
             ):
-                remaining = deadline - time.monotonic()
+                now = time.monotonic()
+                if now - last_report >= PROGRESS_REPORT_SECONDS:
+                    msgr.message(
+                        f"Ensemble {ensemble_id}: waiting for result repository before requesting "
+                        f"Run for Simulation {simulation_id} — {now - started:.0f} s elapsed"
+                    )
+                    last_report = now
+                remaining = deadline - now
                 if remaining > 0:
                     time.sleep(min(RESULT_REPOSITORY_POLL_SECONDS, remaining))
                 if time.monotonic() >= deadline:
@@ -348,10 +417,17 @@ def launch_runs(archive: BuiltArchive, draft: EnsembleDraft, session_token: str)
     sources = source_names(archive.simulations)
     headers = {"X-Session-Token": session_token}
     errors: list[str] = []
+    total = len(archive.simulations)
+    msgr.message(
+        f"Ensemble {ensemble_id}: requesting runs — {len(draft.run_ids)}/{total} already requested"
+    )
     for index, simulation in enumerate(archive.simulations):
+        member = f"member {index} ({draft.member_labels[index]})"
+        stage = "creating Simulation"
         try:
             simulation_id = draft.simulation_ids.get(index)
             if simulation_id is None:
+                msgr.message(f"Ensemble {ensemble_id}: {member}, {stage}…")
                 config = simulation.simulation_config
                 kinds = dict(simulation.input_kinds)
                 response = requests.put(
@@ -385,7 +461,13 @@ def launch_runs(archive: BuiltArchive, draft: EnsembleDraft, session_token: str)
                     update={"simulation_ids": draft.simulation_ids | {index: simulation_id}}
                 )
                 save_ensemble_draft(draft)
+            else:
+                msgr.message(
+                    f"Ensemble {ensemble_id}: {member}, reusing Simulation {simulation_id}"
+                )
             if index not in draft.run_ids:
+                stage = "requesting Run"
+                msgr.message(f"Ensemble {ensemble_id}: {member}, {stage}…")
                 run = _request_run(
                     simulation_id,
                     ensemble_id,
@@ -400,6 +482,15 @@ def launch_runs(archive: BuiltArchive, draft: EnsembleDraft, session_token: str)
                     raise ValueError("Run response refers to another Simulation")
                 draft = draft.model_copy(update={"run_ids": draft.run_ids | {index: run.run_id}})
                 save_ensemble_draft(draft)
+                msgr.message(
+                    f"Ensemble {ensemble_id}: {member}, Run {run.run_id} requested — "
+                    f"{len(draft.run_ids)}/{total} runs requested"
+                )
+            else:
+                msgr.message(
+                    f"Ensemble {ensemble_id}: {member}, "
+                    f"Run {draft.run_ids[index]} already requested"
+                )
         except (requests.RequestException, ValueError, KeyError, TimeoutError) as error:
             if isinstance(error, requests.HTTPError) and error.response is not None:
                 request = error.response.request
@@ -409,7 +500,9 @@ def launch_runs(archive: BuiltArchive, draft: EnsembleDraft, session_token: str)
                     f"{error.response.text}",
                     file=sys.stderr,
                 )
-            errors.append(f"member {index} ({draft.member_labels[index]}): {error}")
+            detail = f"{member}, {stage} failed: {error}"
+            msgr.warning(f"Ensemble {ensemble_id}: {detail}")
+            errors.append(detail)
     if errors:
         raise ValueError(
             f"Ensemble {draft.ensemble_id} launched "

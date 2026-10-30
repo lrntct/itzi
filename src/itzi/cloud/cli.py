@@ -51,6 +51,7 @@ def itzi_cloud_login(cli_args) -> None:
 def itzi_cloud_push(cli_args: argparse.Namespace) -> None:
     """Build Input archives and request one cloud Run per accepted member."""
     os.environ["ITZI_VERBOSE"] = str(VerbosityLevel.MESSAGE)
+    msgr._itzi_logger.set_verbosity(VerbosityLevel.MESSAGE)
 
     from itzi.cloud.auth import check_login, get_token
 
@@ -61,7 +62,12 @@ def itzi_cloud_push(cli_args: argparse.Namespace) -> None:
 
     for conf_file in cli_args.config_file:
         try:
+            msgr.message(f"{conf_file}: validating configuration and preparing cloud inputs…")
             for archive in build_archives(conf_file, session_token):
+                source = archive.ensemble.source
+                msgr.message(
+                    f"{source.path} document {source.document_index}: submitting ensemble…"
+                )
                 draft = create_ensemble(
                     archive,
                     project_id=cli_args.project,
@@ -73,11 +79,13 @@ def itzi_cloud_push(cli_args: argparse.Namespace) -> None:
                 draft = wait_for_input(draft, session_token)
                 draft = launch_runs(archive, draft, session_token)
                 runs = (f"{index}={run}" for index, run in sorted(draft.run_ids.items()))
-                source = archive.ensemble.source
                 msgr.message(
                     f"{source.path} document {source.document_index}: "
+                    f"push complete — {len(draft.run_ids)}/{len(archive.simulations)} "
+                    "runs requested; "
                     f"Ensemble {draft.ensemble_id}, Input {draft.input_id} accepted; "
-                    f"runs: {', '.join(runs)}"
+                    f"runs: {', '.join(runs)}. "
+                    f"Check progress with itzi cloud status {draft.ensemble_id}"
                 )
         except Exception as error:  # noqa: BLE001 - surface resolver, reader and HTTP errors.
             msgr.fatal(f"{conf_file}: cloud push failed: {error}")

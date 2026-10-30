@@ -650,3 +650,44 @@ def test_input_format_uses_authenticated_execution_api(monkeypatch: pytest.Monke
             {"headers": {"X-Session-Token": "session-token"}, "timeout": 30},
         )
     ]
+
+
+def test_upload_progress_preserves_request_body_and_content_length(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import requests
+
+    from itzi.cloud import push
+    from itzi.cloud.archive import BuiltArchive
+
+    path = tmp_path / "input.tzst"
+    payload = b"0123456789"
+    path.write_bytes(payload)
+    archive = cast(BuiltArchive, types.SimpleNamespace(path=path, size_bytes=len(payload)))
+    messages: list[str] = []
+    elapsed = 0.0
+    monkeypatch.setattr(push.msgr, "message", messages.append)
+    monkeypatch.setattr(push.time, "monotonic", lambda: elapsed)
+
+    with push._UploadReader(archive, "input-1") as reader:
+        prepared = requests.Request("PUT", "https://storage.example/input", data=reader).prepare()
+        assert prepared.headers["Content-Length"] == str(len(payload))
+        assert "Transfer-Encoding" not in prepared.headers
+        assert reader.tell() == 0
+        assert reader.read(2) == payload[:2]
+        assert not messages
+        elapsed = 5.0
+        assert reader.read(2) == payload[2:4]
+        elapsed = 6.0
+        assert reader.read(2) == payload[4:6]
+        elapsed = 10.0
+        assert reader.read(2) == payload[6:8]
+        elapsed = 15.0
+        assert reader.read() == payload[8:]
+        assert reader.read() == b""
+
+    assert reader.closed
+    assert messages == [
+        "Input input-1: uploading — 4/10 bytes (40%)",
+        "Input input-1: uploading — 8/10 bytes (80%)",
+    ]
