@@ -131,6 +131,9 @@ be positive ``HH:MM:SS`` strings (for example ``"26:00:00"``); hours may
 exceed 23, minutes and seconds must be 0–59. ``end`` must follow ``start``.
 For ``start``/``end``, either both timestamps carry timezone offsets or neither does.
 Offsets are ignored by GRASS: execution uses the supplied wall-clock values without timezone conversion.
+For cloud execution, timezone-less GRASS input timestamps are interpreted using
+the YAML ``start`` offset, or the submitting machine's local timezone if no offset
+is supplied, then converted to UTC.
 All members share the same time settings.
 
 ``input``

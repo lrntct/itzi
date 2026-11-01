@@ -23,7 +23,7 @@ import warnings
 from compression.zstd import CompressionParameter
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, replace
-from datetime import UTC, timedelta
+from datetime import UTC, timedelta, tzinfo
 from multiprocessing import get_context
 from pathlib import Path
 from typing import TypedDict
@@ -161,8 +161,10 @@ def convert_relative_time_coordinate(coord: xr.DataArray) -> xr.DataArray:
     return converted_coord
 
 
-def convert_absolute_time_coordinate(coord: xr.DataArray) -> xr.DataArray:
-    """Encode GRASS absolute times as UTC, treating naive times as local."""
+def convert_absolute_time_coordinate(
+    coord: xr.DataArray, source_timezone: tzinfo | None = None
+) -> xr.DataArray:
+    """Encode GRASS times as UTC, using the source timezone or local for naive times."""
     times = []
     for value in coord.values:
         timestamp = pd.Timestamp(value)
@@ -170,7 +172,7 @@ def convert_absolute_time_coordinate(coord: xr.DataArray) -> xr.DataArray:
             raise TypeError(f"{coord.name} has missing times")
         if timestamp.tzinfo is None:
             timestamp = timestamp.tz_localize(
-                timestamp.to_pydatetime(warn=False).astimezone().tzinfo
+                source_timezone or timestamp.to_pydatetime(warn=False).astimezone().tzinfo
             )
         times.append(timestamp.tz_convert(UTC).tz_localize(None).to_datetime64())
     return coord.copy(data=np.array(times))
@@ -386,9 +388,14 @@ def _dataset(
                     raise ValueError(f"{identifier} has no samples during simulation time")
                 variable = variable.rename({old_time: f"time_{name}"})
             if time_dims and first.simulation_config.temporal_type == TemporalType.ABSOLUTE:
+                assert time.source_start is not None
                 time_name = f"time_{name}"
                 variable = variable.assign_coords(
-                    {time_name: convert_absolute_time_coordinate(variable[time_name])}
+                    {
+                        time_name: convert_absolute_time_coordinate(
+                            variable[time_name], time.source_start.tzinfo
+                        )
+                    }
                 )
             variable = variable.assign_coords(x=x, y=y)
             if variable.dtype.kind == "i":
