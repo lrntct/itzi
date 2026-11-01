@@ -14,7 +14,9 @@ GNU General Public License for more details.
 
 from __future__ import annotations
 
+import getpass
 import json
+from urllib.parse import urljoin
 
 import itzi.messenger as msgr
 from itzi.cloud import urls
@@ -40,23 +42,45 @@ def check_login() -> str:
 
 
 def login(email: str, password: str, url: str | None = None) -> None:
-    """Log into the cloud service.
-    Store session token into the system keyring.
-    """
+    """Log in, prompting for MFA if needed, and store the completed session in the keyring."""
     url = url or urls.get_login_endpoint()
     data = {
         "email": str(email),
         "password": str(password),
     }
     with requests.Session() as session:
+        challenge_token = None
         response = session.post(url, json=data)
-        if response.status_code == 200:
-            resp_dict = json.loads(response.text)
-        else:
+        if response.status_code == 401:
+            try:
+                resp_dict = response.json()
+            except requests.exceptions.JSONDecodeError:
+                resp_dict = {}
+            flows = resp_dict.get("data", {}).get("flows", ())
+            if any(
+                flow.get("id") == "mfa_authenticate" and flow.get("is_pending") is True
+                for flow in flows
+            ):
+                challenge_token = resp_dict.get("meta", {}).get("session_token")
+                if not isinstance(challenge_token, str) or not challenge_token:
+                    msgr.fatal("Authentication failed. Missing MFA session token.")
+                code = getpass.getpass("MFA code: ").strip()
+                response = session.post(
+                    urljoin(url, "2fa/authenticate"),
+                    json={"code": code},
+                    headers={"X-Session-Token": challenge_token},
+                )
+        if response.status_code != 200:
             msgr.fatal(
                 f"Authentication failed. Code: {response.status_code}. Reason: {response.reason}"
             )
-    session_token = resp_dict["meta"]["session_token"]
+        resp_dict = response.json()
+        meta = resp_dict["meta"]
+        if challenge_token is not None and meta.get("is_authenticated") is not True:
+            msgr.fatal("Authentication failed. MFA login did not complete.")
+        session_token = meta.get("session_token", challenge_token)
+        if not isinstance(session_token, str) or not session_token:
+            msgr.fatal("Authentication failed. Missing session token.")
     set_token(email, session_token)
     msgr.message(f"{email} successfully logged in.")
 
