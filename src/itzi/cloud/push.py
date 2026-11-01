@@ -29,6 +29,7 @@ from itzi_core import TemporalType
 import itzi.messenger as msgr
 from itzi.cloud import urls
 from itzi.cloud.archive import BuiltArchive, source_names
+from itzi.cloud.http import create_session
 from itzi.cloud.metadata_storage import (
     EnsembleDraft,
     get_or_create_ensemble_draft,
@@ -99,11 +100,12 @@ def create_ensemble(
         msgr.message(
             f"{archive.ensemble.ensemble_id}: checking saved Ensemble {draft.ensemble_id}…"
         )
-        response = requests.get(
-            urls.get_input_endpoint(draft.input_id),
-            headers={"X-Session-Token": session_token},
-            timeout=30,
-        )
+        with create_session() as session:
+            response = session.get(
+                urls.get_input_endpoint(draft.input_id),
+                headers={"X-Session-Token": session_token},
+                timeout=30,
+            )
         if response.status_code != 404:
             response.raise_for_status()
             msgr.message(f"{archive.ensemble.ensemble_id}: reusing Ensemble {draft.ensemble_id}")
@@ -112,15 +114,16 @@ def create_ensemble(
         draft = reset_ensemble_draft(draft)
 
     msgr.message(f"{archive.ensemble.ensemble_id}: creating cloud Ensemble…")
-    response = requests.post(
-        urls.get_ensembles_endpoint(project_id),
-        headers={"X-Session-Token": session_token, "Idempotency-Key": draft.idempotency_key},
-        json={
-            "name": archive.ensemble.ensemble_id,
-            "description": archive.ensemble.ensemble_description or "",
-        },
-        timeout=30,
-    )
+    with create_session() as session:
+        response = session.post(
+            urls.get_ensembles_endpoint(project_id),
+            headers={"X-Session-Token": session_token, "Idempotency-Key": draft.idempotency_key},
+            json={
+                "name": archive.ensemble.ensemble_id,
+                "description": archive.ensemble.ensemble_description or "",
+            },
+            timeout=30,
+        )
     if response.status_code == 409:
         raise ValueError(f"Ensemble creation conflict: {response.json()['detail']}")
     if response.status_code == 422:
@@ -156,11 +159,12 @@ def _confirmed_on_server(
     draft: EnsembleDraft, session_token: str, archive: BuiltArchive
 ) -> str | None:
     assert draft.input_id is not None
-    response = requests.get(
-        urls.get_input_endpoint(draft.input_id),
-        headers={"X-Session-Token": session_token},
-        timeout=30,
-    )
+    with create_session() as session:
+        response = session.get(
+            urls.get_input_endpoint(draft.input_id),
+            headers={"X-Session-Token": session_token},
+            timeout=30,
+        )
     response.raise_for_status()
     status = InputUploadStatusSchema.model_validate(response.json())
     if status.input_id != draft.input_id:
@@ -210,15 +214,16 @@ def upload_input(archive: BuiltArchive, draft: EnsembleDraft, session_token: str
         if sha256.hexdigest() != archive.sha256:
             raise ValueError("Archive SHA-256 changed since building the Input")
         msgr.message(f"Input {draft.input_id}: requesting upload instructions…")
-        response = requests.post(
-            f"{input_url}/upload-instructions",
-            headers=headers,
-            json={
-                "size_bytes": archive.size_bytes,
-                "content_md5_base64": base64.b64encode(md5.digest()).decode("ascii"),
-            },
-            timeout=30,
-        )
+        with create_session() as session:
+            response = session.post(
+                f"{input_url}/upload-instructions",
+                headers=headers,
+                json={
+                    "size_bytes": archive.size_bytes,
+                    "content_md5_base64": base64.b64encode(md5.digest()).decode("ascii"),
+                },
+                timeout=30,
+            )
         if response.status_code == 429:
             payload = response.json()
             raise ValueError(
@@ -239,8 +244,8 @@ def upload_input(archive: BuiltArchive, draft: EnsembleDraft, session_token: str
             raise ValueError("Signed upload Content-Type does not match application/zstd")
         msgr.message(f"Input {draft.input_id}: uploading — 0/{archive.size_bytes:,} bytes (0%)")
         try:
-            with _UploadReader(archive, draft.input_id) as file:
-                put = requests.put(
+            with create_session() as session, _UploadReader(archive, draft.input_id) as file:
+                put = session.put(
                     instruction.url,
                     headers={"Content-Type": "application/zstd", **instruction.headers},
                     data=file,
@@ -259,16 +264,17 @@ def upload_input(archive: BuiltArchive, draft: EnsembleDraft, session_token: str
         transfer_id = instruction.transfer_id
 
     msgr.message(f"Input {draft.input_id}: confirming upload…")
-    response = requests.post(
-        f"{input_url}/confirm",
-        headers=headers,
-        json={
-            "transfer_id": transfer_id,
-            "size_bytes": archive.size_bytes,
-            "sha256": archive.sha256,
-        },
-        timeout=30,
-    )
+    with create_session() as session:
+        response = session.post(
+            f"{input_url}/confirm",
+            headers=headers,
+            json={
+                "transfer_id": transfer_id,
+                "size_bytes": archive.size_bytes,
+                "sha256": archive.sha256,
+            },
+            timeout=30,
+        )
     if response.status_code == 409:
         state = _confirmed_on_server(draft, session_token, archive)
         if state is not None:
@@ -293,11 +299,12 @@ def wait_for_input(draft: EnsembleDraft, session_token: str) -> EnsembleDraft:
     last_report = started
     last_state: str | None = None
     while True:
-        response = requests.get(
-            input_url,
-            headers={"X-Session-Token": session_token},
-            timeout=30,
-        )
+        with create_session() as session:
+            response = session.get(
+                input_url,
+                headers={"X-Session-Token": session_token},
+                timeout=30,
+            )
         response.raise_for_status()
         status = InputUploadStatusSchema.model_validate(response.json())
         if status.input_id != draft.input_id:
@@ -370,11 +377,12 @@ def _request_run(
     deadline = started + RESULT_REPOSITORY_WAIT_SECONDS
     last_report = started - PROGRESS_REPORT_SECONDS
     while True:
-        response = requests.post(
-            urls.get_runs_endpoint(simulation_id),
-            headers=headers,
-            timeout=max(0.001, deadline - time.monotonic()),
-        )
+        with create_session() as session:
+            response = session.post(
+                urls.get_runs_endpoint(simulation_id),
+                headers=headers,
+                timeout=max(0.001, deadline - time.monotonic()),
+            )
         if response.status_code == 409:
             failure = None
             try:
@@ -430,23 +438,26 @@ def launch_runs(archive: BuiltArchive, draft: EnsembleDraft, session_token: str)
                 msgr.message(f"Ensemble {ensemble_id}: {member}, {stage}…")
                 config = simulation.simulation_config
                 kinds = dict(simulation.input_kinds)
-                response = requests.put(
-                    f"{input_url}/simulations/{index}",
-                    headers=headers,
-                    json={
-                        "output_configuration": output,
-                        "configuration": {
-                            "input_map_names": {
-                                role: sources[(name, kinds[role])]
-                                for role, name in config.input_map_names.items()
+                with create_session() as session:
+                    response = session.put(
+                        f"{input_url}/simulations/{index}",
+                        headers=headers,
+                        json={
+                            "output_configuration": output,
+                            "configuration": {
+                                "input_map_names": {
+                                    role: sources[(name, kinds[role])]
+                                    for role, name in config.input_map_names.items()
+                                },
+                                "surface_flow_parameters": (
+                                    config.surface_flow_parameters.model_dump()
+                                ),
+                                "dtinf": config.dtinf,
+                                "infiltration_model": str(config.infiltration_model),
                             },
-                            "surface_flow_parameters": config.surface_flow_parameters.model_dump(),
-                            "dtinf": config.dtinf,
-                            "infiltration_model": str(config.infiltration_model),
                         },
-                    },
-                    timeout=30,
-                )
+                        timeout=30,
+                    )
                 response.raise_for_status()
                 created = SimulationResponseSchema.model_validate(response.json())
                 if (

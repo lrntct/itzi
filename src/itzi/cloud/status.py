@@ -16,11 +16,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-import requests
 from pydantic import TypeAdapter
 
 import itzi.messenger as msgr
 from itzi.cloud import urls
+from itzi.cloud.http import create_session
 from itzi.cloud.metadata_storage import EnsembleDraft, list_ensemble_drafts
 from itzi.cloud.schemas import InputDetailSchema, SimulationResponseSchema
 
@@ -48,9 +48,10 @@ def get_ensemble_statuses(
         if draft.ensemble_id is None or draft.input_id is None:
             statuses.append(EnsembleStatus(draft, None, ()))
             continue
-        response = requests.get(
-            urls.get_input_endpoint(draft.input_id), headers=headers, timeout=30
-        )
+        with create_session() as session:
+            response = session.get(
+                urls.get_input_endpoint(draft.input_id), headers=headers, timeout=30
+            )
         response.raise_for_status()
         input_detail = InputDetailSchema.model_validate(response.json())
         if (
@@ -59,9 +60,12 @@ def get_ensemble_statuses(
             or input_detail.project_id != draft.project_id
         ):
             raise ValueError(f"Input status does not match recorded Ensemble {draft.ensemble_id}")
-        response = requests.get(
-            urls.get_ensemble_simulations_endpoint(draft.ensemble_id), headers=headers, timeout=30
-        )
+        with create_session() as session:
+            response = session.get(
+                urls.get_ensemble_simulations_endpoint(draft.ensemble_id),
+                headers=headers,
+                timeout=30,
+            )
         response.raise_for_status()
         simulations = TypeAdapter(tuple[SimulationResponseSchema, ...]).validate_python(
             response.json()

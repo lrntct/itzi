@@ -21,7 +21,7 @@ from itzi.cloud import urls
 from itzi.cloud.schemas import ProjectSchema
 
 try:
-    import requests
+    from itzi.cloud.http import create_session
 except ImportError:
     raise ImportError(
         "To use the cloud functionalities, install itzi with: "
@@ -35,7 +35,7 @@ def get_projects_list(session_token: str, url: str | None = None) -> list[Projec
     url = url or urls.get_projects_endpoint()
     headers = {"X-Session-Token": session_token}
 
-    with requests.Session() as session:
+    with create_session() as session:
         response = session.get(url, headers=headers)
 
         if response.status_code != 200:

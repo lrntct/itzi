@@ -25,6 +25,7 @@ import requests
 
 import itzi.messenger as msgr
 from itzi.cloud import urls
+from itzi.cloud.http import create_session
 from itzi.cloud.metadata_storage import list_ensemble_drafts
 from itzi.cloud.schemas import (
     PackageDownloadSchema,
@@ -74,11 +75,12 @@ def wait_for_package(
     """Poll the frozen package, obtaining fresh signed instructions when ready."""
     deadline = time.monotonic() + PACKAGE_WAIT_SECONDS
     while True:
-        response = requests.get(
-            urls.get_package_endpoint(ensemble_id, package.package_id),
-            headers={"X-Session-Token": session_token},
-            timeout=30,
-        )
+        with create_session() as session:
+            response = session.get(
+                urls.get_package_endpoint(ensemble_id, package.package_id),
+                headers={"X-Session-Token": session_token},
+                timeout=30,
+            )
         _check_package_response(response)
         status = PackageStatusResponseSchema.model_validate(response.json())
         if (
@@ -108,9 +110,10 @@ def wait_for_package(
 
 def download_package(download: PackageDownloadSchema, destination: Path) -> bool:
     """Stream and verify the archive, publishing it atomically without overwriting."""
-    with requests.get(
-        download.url, headers=download.headers, stream=True, timeout=300
-    ) as response:
+    with (
+        create_session() as session,
+        session.get(download.url, headers=download.headers, stream=True, timeout=300) as response,
+    ):
         if response.status_code in (401, 403):
             return False  # The signed URL may have expired in transit; refresh via the API.
         if response.status_code in (404, 410):
@@ -151,12 +154,13 @@ def pull_result_package(
     if not destination.parent.is_dir():
         raise FileNotFoundError(f"Destination directory does not exist: {destination.parent}")
     selected = select_run_ids(email, ensemble_id, run_ids)
-    response = requests.post(
-        urls.get_packages_endpoint(ensemble_id),
-        headers={"X-Session-Token": session_token},
-        json=PackageRequestSchema(run_ids=selected).model_dump(mode="json"),
-        timeout=30,
-    )
+    with create_session() as session:
+        response = session.post(
+            urls.get_packages_endpoint(ensemble_id),
+            headers={"X-Session-Token": session_token},
+            json=PackageRequestSchema(run_ids=selected).model_dump(mode="json"),
+            timeout=30,
+        )
     _check_package_response(response)
     package = PackageRequestResponseSchema.model_validate(response.json())
     msgr.message(

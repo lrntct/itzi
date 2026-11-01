@@ -13,6 +13,7 @@ from typing import cast
 
 import numpy as np
 import pytest
+import requests
 from dask import array as da
 from dask import delayed
 from itzi_core.const import TemporalType
@@ -647,7 +648,7 @@ def test_input_format_uses_authenticated_execution_api(monkeypatch: pytest.Monke
     from itzi.cloud import archive
 
     calls = []
-    monkeypatch.delenv("ITZI_CLOUD_API_BASE", raising=False)
+    monkeypatch.setenv("ITZI_CLOUD_API_BASE", "https://cloud.example.test")
 
     class Response:
         def raise_for_status(self) -> None:
@@ -663,14 +664,17 @@ def test_input_format_uses_authenticated_execution_api(monkeypatch: pytest.Monke
                 },
             }
 
-    monkeypatch.setattr(
-        archive.requests, "get", lambda url, **kwargs: calls.append((url, kwargs)) or Response()
-    )
+    def get(self: requests.Session, url: str, headers: dict[str, str], timeout: int) -> Response:
+        assert self.headers["User-Agent"] == "itzi"
+        calls.append((url, {"headers": headers, "timeout": timeout}))
+        return Response()
+
+    monkeypatch.setattr(requests.Session, "get", get)
     capability = archive.get_input_format("session-token")
     assert capability.limits.INPUT_MAX_MEMBERS == 1000
     assert calls == [
         (
-            "http://localhost:8000/execution-api/v1/input-formats/precipient-itzi-input-v1",
+            "https://cloud.example.test/execution-api/v1/input-formats/precipient-itzi-input-v1",
             {"headers": {"X-Session-Token": "session-token"}, "timeout": 30},
         )
     ]
@@ -679,8 +683,6 @@ def test_input_format_uses_authenticated_execution_api(monkeypatch: pytest.Monke
 def test_upload_progress_preserves_request_body_and_content_length(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    import requests
-
     from itzi.cloud import push
     from itzi.cloud.archive import BuiltArchive
 

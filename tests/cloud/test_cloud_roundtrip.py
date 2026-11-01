@@ -41,6 +41,7 @@ class FakeCloudState:
     def __init__(self) -> None:
         self.tokens_by_email: dict[str, str] = {}
         self.email_by_token: dict[str, str] = {}
+        self.user_agents: list[str | None] = []
         self.download_headers: dict[str, dict[str, str]] = {}
         self.package_archive = b"opaque result package\x00" * 100000
         self.package_requests: list[tuple[str, dict[str, list[str]], str]] = []
@@ -102,6 +103,12 @@ class FakeCloudServer(ThreadingHTTPServer):
 
 class FakeCloudRequestHandler(BaseHTTPRequestHandler):
     server: FakeCloudServer
+
+    def parse_request(self) -> bool:
+        if not super().parse_request():
+            return False
+        self.server.state.user_agents.append(self.headers.get("User-Agent"))
+        return True
 
     def do_POST(self) -> None:
         path = urlparse(self.path).path
@@ -711,6 +718,7 @@ def test_cloud_login_status_pull_with_fake_provider(
         "grassdb",
         "verified.archive",
     ]
+    assert set(state.user_agents) == {"itzi"}
 
 
 @pytest.mark.parametrize("input_state", ["uploading", "validating", "accepted", "failed"])
@@ -1207,6 +1215,7 @@ def test_cloud_push_creates_and_resumes_each_document(
     assert len(fake_cloud_server.state.ensemble_creates) == 2
     assert len(fake_cloud_server.state.uploads) == 2
     assert len(fake_cloud_server.state.confirm_requests) == 2
+    assert set(fake_cloud_server.state.user_agents) == {"itzi"}
     assert (
         json.loads(ctx.metadata_storage.get_metadata_file_path().read_text())["ensembles"]
         == stored["ensembles"]
@@ -1384,11 +1393,19 @@ def test_cloud_push_preserves_draft_on_input_check_error(
     if isinstance(error, int):
         fake_cloud_server.state.input_errors["input-1"] = (error, {"detail": "Unavailable"})
     else:
+        original_get = requests.Session.get
 
-        def get(url: str, **kwargs: str | int | dict[str, str]) -> requests.Response:
-            raise error
+        def get(
+            self: requests.Session,
+            url: str,
+            headers: dict[str, str],
+            timeout: int | None = None,
+        ) -> requests.Response:
+            if "/execution-api/" in url:
+                raise error
+            return original_get(self, url, headers=headers, timeout=timeout)
 
-        monkeypatch.setattr(requests, "get", get)
+        monkeypatch.setattr(requests.Session, "get", get)
     with pytest.raises(FatalError, match=str(error)):
         itzi_cloud_push(args)
     assert metadata_path.read_bytes() == before

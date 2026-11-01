@@ -3,7 +3,7 @@
 import json
 from types import SimpleNamespace
 
-from itzi.cloud import project, urls
+from itzi.cloud import http, project, urls
 from itzi.cloud.schemas import ProjectSchema, TeamSchema
 
 
@@ -11,6 +11,7 @@ class FakeSession:
     def __init__(self, response) -> None:
         self.response = response
         self.requests = []
+        self.headers = {}
 
     def __enter__(self):
         return self
@@ -34,11 +35,12 @@ def test_get_projects_list_uses_session_token_and_validates_response(monkeypatch
     session = FakeSession(
         SimpleNamespace(status_code=200, reason="OK", text=json.dumps(response_data))
     )
-    monkeypatch.setattr(project.requests, "Session", lambda: session)
+    monkeypatch.setattr(http.requests, "Session", lambda: session)
     monkeypatch.setenv(urls.API_BASE_ENV_VAR, "https://example.test/")
 
     projects = project.get_projects_list("token-123")
 
+    assert session.headers["User-Agent"] == "itzi"
     assert projects == [
         ProjectSchema(
             project_id="proj-abc123",

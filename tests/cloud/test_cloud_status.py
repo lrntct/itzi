@@ -66,7 +66,10 @@ def test_status_selects_local_account_and_uses_execution_endpoints(
         metadata_storage.save_ensemble_draft(draft)
     requests_made: list[str] = []
 
-    def get(url: str, headers: dict[str, str], timeout: int) -> requests.Response:
+    def get(
+        self: requests.Session, url: str, headers: dict[str, str], timeout: int
+    ) -> requests.Response:
+        assert self.headers["User-Agent"] == "itzi"
         assert headers == {"X-Session-Token": "session-token"}
         assert timeout == 30
         requests_made.append(url)
@@ -79,7 +82,7 @@ def test_status_selects_local_account_and_uses_execution_endpoints(
         response._content = json.dumps(payload).encode()
         return response
 
-    monkeypatch.setattr(status.requests, "get", get)
+    monkeypatch.setattr(requests.Session, "get", get)
     results = status.get_ensemble_statuses("session-token", "user@example.com", ensemble_id)
     expected = (one,) if ensemble_id else (one, two)
     assert tuple(result.draft for result in results) == expected
@@ -100,7 +103,7 @@ def test_status_reports_empty_and_uncreated_submissions_without_remote_requests(
 ) -> None:
     monkeypatch.setattr(metadata_storage, "user_data_dir", lambda *_: str(tmp_path))
     monkeypatch.setattr(
-        status.requests, "get", lambda *args, **kwargs: pytest.fail("unexpected GET")
+        requests.Session, "get", lambda *args, **kwargs: pytest.fail("unexpected GET")
     )
     messages: list[str] = []
     monkeypatch.setattr(status.msgr, "message", messages.append)
@@ -126,7 +129,9 @@ def test_status_surfaces_http_errors(monkeypatch: pytest.MonkeyPatch, resource: 
     draft = _draft("one")
     monkeypatch.setattr(status, "list_ensemble_drafts", lambda email: (draft,))
 
-    def get(url: str, **kwargs: str | int | dict[str, str]) -> requests.Response:
+    def get(
+        self: requests.Session, url: str, **kwargs: str | int | dict[str, str]
+    ) -> requests.Response:
         response = requests.Response()
         response.status_code = 200
         response._content = json.dumps(_input_detail(draft)).encode()
@@ -134,7 +139,7 @@ def test_status_surfaces_http_errors(monkeypatch: pytest.MonkeyPatch, resource: 
             response.status_code = 404
         return response
 
-    monkeypatch.setattr(status.requests, "get", get)
+    monkeypatch.setattr(requests.Session, "get", get)
     with pytest.raises(requests.HTTPError):
         status.get_ensemble_statuses("token", draft.email)
 
@@ -145,7 +150,7 @@ def test_status_rejects_mismatched_input_identity(monkeypatch: pytest.MonkeyPatc
     response = requests.Response()
     response.status_code = 200
     response._content = json.dumps(_input_detail(draft) | {"ensemble_id": "wrong"}).encode()
-    monkeypatch.setattr(status.requests, "get", lambda *args, **kwargs: response)
+    monkeypatch.setattr(requests.Session, "get", lambda *args, **kwargs: response)
 
     with pytest.raises(ValueError, match="does not match recorded Ensemble"):
         status.get_ensemble_statuses("token", draft.email)

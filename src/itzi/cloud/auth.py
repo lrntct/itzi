@@ -25,6 +25,8 @@ try:
     import keyring
     import keyring.errors
     import requests
+
+    from itzi.cloud.http import create_session
 except ImportError:
     raise ImportError(
         "To use the cloud functionalities, install itzi with: "
@@ -48,7 +50,7 @@ def login(email: str, password: str, url: str | None = None) -> None:
         "email": str(email),
         "password": str(password),
     }
-    with requests.Session() as session:
+    with create_session() as session:
         challenge_token = None
         response = session.post(url, json=data)
         if response.status_code == 401:
@@ -115,7 +117,7 @@ def logout(email: str, url: str | None = None) -> None:
             msgr.message(f"No stored session found for {email}")
         else:
             try:
-                with requests.Session() as session:
+                with create_session() as session:
                     response = session.delete(url, headers={"X-Session-Token": token})
             except requests.RequestException as error:
                 msgr.warning(f"Could not revoke the remote session: {error}")
@@ -137,7 +139,7 @@ def is_logged(email: str, url: str | None = None) -> bool:
         return False
 
     headers = {"X-Session-Token": token}
-    with requests.Session() as session:
+    with create_session() as session:
         response = session.get(url, headers=headers)
     resp_dict = json.loads(response.text)
 

@@ -30,7 +30,6 @@ from typing import TypedDict
 
 import numpy as np
 import pandas as pd
-import requests
 import xarray as xr
 import zarr
 from itzi_core import TemporalType
@@ -42,6 +41,7 @@ from zarr.errors import UnstableSpecificationWarning
 
 import itzi.messenger as msgr
 from itzi.cloud import urls
+from itzi.cloud.http import create_session
 from itzi.ensemble import load_yaml_stream
 from itzi.ensemble.models import (
     ExpandedEnsemble,
@@ -179,11 +179,12 @@ def convert_absolute_time_coordinate(
 
 
 def get_input_format(session_token: str) -> InputFormat:
-    response = requests.get(
-        f"{urls.get_execution_api_base()}/input-formats/precipient-itzi-input-v1",
-        headers={"X-Session-Token": session_token},
-        timeout=30,
-    )
+    with create_session() as session:
+        response = session.get(
+            f"{urls.get_execution_api_base()}/input-formats/precipient-itzi-input-v1",
+            headers={"X-Session-Token": session_token},
+            timeout=30,
+        )
     response.raise_for_status()
     return InputFormat.model_validate(response.json())
 
