@@ -438,13 +438,15 @@ def test_two_member_input_archive(monkeypatch: pytest.MonkeyPatch, tmp_path: Pat
             "INPUT_MIN_SPATIAL_COORDINATE_SAMPLES": 5,
         }
     )
-    capability = archive.InputFormat(
-        limits=limits,
-        supported_versions=archive.SupportedVersions(
-            xarray=[xr.__version__],
-            zarr_python=[zarr.__version__],
-            accepted_extensions=[archive.WriterExtension(name="fixed_length_utf32", version="1")],
-        ),
+    capability = archive.InputFormat.model_validate(
+        {
+            "limits": limits.model_dump(),
+            "supported_versions": {
+                "xarray": ["not-deployed"],
+                "zarr_python": ["not-deployed"],
+                "accepted_extensions": [],
+            },
+        }
     )
     with warnings.catch_warnings(record=True) as recorded:
         warnings.simplefilter("always")
@@ -528,19 +530,6 @@ def test_two_member_input_archive(monkeypatch: pytest.MonkeyPatch, tmp_path: Pat
                 update={"limits": limits.model_copy(update={"INPUT_MAX_DATA_VARIABLES": 4})}
             ),
             tmp_path / "invalid.tzst",
-        )
-    with pytest.raises(ValueError, match="writer"):
-        archive.build_archive(
-            ensemble,
-            simulations,
-            capability.model_copy(
-                update={
-                    "supported_versions": capability.supported_versions.model_copy(
-                        update={"xarray": ["not-deployed"]}
-                    )
-                }
-            ),
-            tmp_path / "unsupported.tzst",
         )
 
 

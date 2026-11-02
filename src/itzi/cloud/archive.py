@@ -31,7 +31,6 @@ from typing import TypedDict
 import numpy as np
 import pandas as pd
 import xarray as xr
-import zarr
 from itzi_core import TemporalType
 from pydantic import BaseModel
 from pyproj import CRS
@@ -88,20 +87,8 @@ class InputLimits(BaseModel):
     INPUT_MAX_METADATA_BYTES: int
 
 
-class WriterExtension(BaseModel):
-    name: str
-    version: str
-
-
-class SupportedVersions(BaseModel):
-    xarray: list[str]
-    zarr_python: list[str]
-    accepted_extensions: list[WriterExtension]
-
-
 class InputFormat(BaseModel):
     limits: InputLimits
-    supported_versions: SupportedVersions
 
 
 @dataclass(frozen=True)
@@ -232,20 +219,6 @@ def build_archives(path: str | Path, session_token: str) -> tuple[BuiltArchive, 
             shutil.rmtree(archive.path.parent)
         raise
     return tuple(archives)
-
-
-def _check_writer(capability: InputFormat) -> None:
-    versions = capability.supported_versions
-    if (
-        xr.__version__ not in versions.xarray
-        or zarr.__version__ not in versions.zarr_python
-        or WriterExtension(name="fixed_length_utf32", version="1")
-        not in versions.accepted_extensions
-    ):
-        raise ValueError(
-            "Installed Xarray/Zarr writer or fixed_length_utf32 "
-            "extension is not supported by the server"
-        )
 
 
 def _check_limit(value: int, maximum: int, description: str) -> None:
@@ -469,7 +442,6 @@ def build_archive(
     destination: Path | None = None,
 ) -> BuiltArchive:
     """Write one archive for an expanded ensemble."""
-    _check_writer(capability)
     if len(simulations) != len(ensemble.simulations):
         raise ValueError("All expanded members must resolve before building an Input")
     limits = capability.limits

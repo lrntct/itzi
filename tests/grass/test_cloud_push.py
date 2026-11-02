@@ -86,14 +86,7 @@ outputs:
             "INPUT_MIN_SPATIAL_COORDINATE_SAMPLES": 5,
         }
     )
-    capability = archive.InputFormat(
-        limits=limits,
-        supported_versions=archive.SupportedVersions(
-            xarray=[xr.__version__],
-            zarr_python=[zarr.__version__],
-            accepted_extensions=[archive.WriterExtension(name="fixed_length_utf32", version="1")],
-        ),
-    )
+    capability = archive.InputFormat(limits=limits)
     built = archive.build_archive(ensemble, simulations, capability, config.parent / "smoke.tzst")
     assert built.path.is_file()
     assert "statistics CSV output will not run" not in caplog.text
