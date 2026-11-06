@@ -7,7 +7,7 @@ authors = [
 ]
 dependencies = [
     "numpy>=2.5",
-    "itzi-core==0.9.0",
+    "itzi-core==0.11.0",
     "pydantic>=2.10",
     "pyyaml>=6.0"
 ]
@@ -85,6 +85,7 @@ line-length = 99
 # GRASS simulation times are intentionally naive, including core's relative-time sentinel.
 "tests/grass/*.py" = ["DTZ001", "DTZ901"]
 "tests/cli/test_configreader.py" = ["DTZ001", "DTZ901"]
+"tests/test_hotstart.py" = ["DTZ901"]
 
 [tool.ty.rules]
 # GRASS imports are resolved at runtime
