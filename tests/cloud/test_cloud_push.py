@@ -645,11 +645,14 @@ def test_input_format_uses_authenticated_execution_api(monkeypatch: pytest.Monke
 
         def json(self) -> dict:
             return {
-                "limits": {name: 1000 for name in archive.InputLimits.model_fields},
-                "supported_versions": {
-                    "xarray": ["2026.7.0"],
-                    "zarr_python": ["3.2.1"],
-                    "accepted_extensions": [{"name": "fixed_length_utf32", "version": "1"}],
+                "limits": {
+                    name: {
+                        "value": 1000,
+                        "unit": "count",
+                        "comparison": "<=",
+                        "calculation": "Test limit",
+                    }
+                    for name in archive.InputLimits.model_fields
                 },
             }
 
@@ -660,7 +663,7 @@ def test_input_format_uses_authenticated_execution_api(monkeypatch: pytest.Monke
 
     monkeypatch.setattr(requests.Session, "get", get)
     capability = archive.get_input_format("session-token")
-    assert capability.limits.INPUT_MAX_MEMBERS == 1000
+    assert capability.limits.model_dump() == dict.fromkeys(archive.InputLimits.model_fields, 1000)
     assert calls == [
         (
             "https://cloud.example.test/execution-api/v1/input-formats/precipient-itzi-input-v1",

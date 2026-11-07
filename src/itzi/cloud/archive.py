@@ -173,7 +173,9 @@ def get_input_format(session_token: str) -> InputFormat:
             timeout=30,
         )
     response.raise_for_status()
-    return InputFormat.model_validate(response.json())
+    return InputFormat.model_validate(
+        {"limits": {name: limit["value"] for name, limit in response.json()["limits"].items()}}
+    )
 
 
 def build_archives(path: str | Path, session_token: str) -> tuple[BuiltArchive, ...]:
