@@ -74,6 +74,7 @@ class MetadataFile(BaseModel):
     version: str
     simulations: dict[str, SimulationRecord]
     ensembles: dict[str, EnsembleDraft] = Field(default_factory=dict)
+    packages: dict[str, str] = Field(default_factory=dict)
 
 
 def _write_metadata_file(metadata_file: Path, metadata: MetadataFile) -> None:
@@ -122,6 +123,30 @@ def list_ensemble_drafts(email: str) -> tuple[EnsembleDraft, ...]:
     """Return locally recorded submissions for the authenticated account."""
     metadata = _load_metadata_file(get_metadata_file_path())
     return tuple(draft for draft in metadata.ensembles.values() if draft.email == email)
+
+
+def _package_key(email: str, ensemble_id: str, run_ids: tuple[str, ...]) -> str:
+    return sha256(json.dumps((email, ensemble_id, sorted(run_ids))).encode()).hexdigest()
+
+
+def load_package_id(email: str, ensemble_id: str, run_ids: tuple[str, ...]) -> str | None:
+    """Find an export for the same account, Ensemble, and unordered Run selection."""
+    metadata = _load_metadata_file(get_metadata_file_path())
+    return metadata.packages.get(_package_key(email, ensemble_id, run_ids))
+
+
+def save_package_id(
+    email: str, ensemble_id: str, run_ids: tuple[str, ...], package_id: str | None
+) -> None:
+    """Record a resumable export, or forget an unavailable one."""
+    metadata_file = get_metadata_file_path()
+    metadata = _load_metadata_file(metadata_file)
+    key = _package_key(email, ensemble_id, run_ids)
+    if package_id is None:
+        metadata.packages.pop(key, None)
+    else:
+        metadata.packages[key] = package_id
+    _write_metadata_file(metadata_file, metadata)
 
 
 def get_or_create_ensemble_draft(

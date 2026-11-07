@@ -122,7 +122,10 @@ class FakeCloudRequestHandler(BaseHTTPRequestHandler):
                 return
             self._send_json(
                 202,
-                {"package_id": "package-1", "state": "queued"},
+                {
+                    "package_id": f"package-{len(self.server.state.package_requests)}",
+                    "state": "queued",
+                },
             )
             return
         if path.startswith("/execution-api/v1/simulations/") and path.endswith("/runs"):
@@ -297,7 +300,9 @@ class FakeCloudRequestHandler(BaseHTTPRequestHandler):
             self._send_json(
                 200,
                 {
-                    "package_id": "wrong-package" if state.wrong_package_id else "package-1",
+                    "package_id": "wrong-package"
+                    if state.wrong_package_id
+                    else path.rsplit("/", 1)[1],
                     "state": package_state,
                     "failure_code": "package_export_failed" if package_state == "failed" else "",
                     "download": (
@@ -837,6 +842,41 @@ def test_cloud_pull_surfaces_api_detail_when_results_are_unavailable(
         )
 
 
+@pytest.mark.parametrize("package_state", ["queued", "running"])
+def test_cloud_pull_resumes_package_after_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    fake_cloud_server: FakeCloudServer,
+    package_state: str,
+) -> None:
+    ctx = _configure_cloud_test_environment(monkeypatch, tmp_path, fake_cloud_server)
+    itzi_cloud_login(
+        argparse.Namespace(email="user@example.com", password="secret", logout=False, status=False)
+    )
+    monkeypatch.setattr(ctx.pull, "PACKAGE_WAIT_SECONDS", 0)
+    state = fake_cloud_server.state
+    state.package_states = [package_state]
+    destination = tmp_path / "result.archive"
+    args = argparse.Namespace(
+        ensemble_id="ensemble-1", run_id=["run-0", "run-1"], output=destination
+    )
+
+    for _ in range(2):
+        with pytest.raises(FatalError, match=f"still {package_state}"):
+            itzi_cloud_pull(args)
+
+    state.package_states = ["ready"]
+    args.run_id.reverse()
+    itzi_cloud_pull(args)
+
+    assert len(state.package_requests) == 1
+    assert (
+        state.package_gets
+        == [("/execution-api/v1/ensembles/ensemble-1/packages/package-1", "token-1")] * 3
+    )
+    assert destination.read_bytes() == state.package_archive
+
+
 @pytest.mark.parametrize("refresh", ["expired_url", "denied_download"])
 def test_cloud_pull_refreshes_signed_url_for_same_package(
     monkeypatch: pytest.MonkeyPatch,
@@ -876,6 +916,50 @@ def test_cloud_pull_refreshes_signed_url_for_same_package(
     )
 
 
+@pytest.mark.parametrize("change", ["account", "ensemble", "runs", "destination"])
+def test_cloud_pull_scopes_resumable_packages_to_account_ensemble_and_runs(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    fake_cloud_server: FakeCloudServer,
+    change: str,
+) -> None:
+    ctx = _configure_cloud_test_environment(monkeypatch, tmp_path, fake_cloud_server)
+    itzi_cloud_login(
+        argparse.Namespace(email="user@example.com", password="secret", logout=False, status=False)
+    )
+    monkeypatch.setattr(ctx.pull, "PACKAGE_WAIT_SECONDS", 0)
+    state = fake_cloud_server.state
+    state.package_states = ["queued"]
+    args = argparse.Namespace(
+        ensemble_id="ensemble-1", run_id=["run-0"], output=tmp_path / "result.archive"
+    )
+    with pytest.raises(FatalError, match="still queued"):
+        itzi_cloud_pull(args)
+
+    if change == "account":
+        itzi_cloud_login(
+            argparse.Namespace(
+                email="other@example.com", password="secret", logout=False, status=False
+            )
+        )
+    elif change == "ensemble":
+        args.ensemble_id = "ensemble-2"
+    elif change == "runs":
+        args.run_id = ["run-1"]
+    else:
+        args.output = tmp_path / "other.archive"
+    state.package_states = ["ready"]
+    itzi_cloud_pull(args)
+
+    expected_package = 1 if change == "destination" else 2
+    assert len(state.package_requests) == expected_package
+    assert state.package_gets[-1] == (
+        f"/execution-api/v1/ensembles/{args.ensemble_id}/packages/package-{expected_package}",
+        "token-2" if change == "account" else "token-1",
+    )
+    assert args.output.read_bytes() == state.package_archive
+
+
 @pytest.mark.parametrize(
     ("failure", "message"),
     [
@@ -897,7 +981,7 @@ def test_cloud_pull_refreshes_signed_url_for_same_package(
         ("interrupt_download", "IncompleteRead"),
     ],
 )
-def test_cloud_pull_failures_never_publish_unverified_artifact(
+def test_cloud_pull_failures_never_publish_unverified_artifact_and_allow_retry(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     fake_cloud_server: FakeCloudServer,
@@ -938,6 +1022,36 @@ def test_cloud_pull_failures_never_publish_unverified_artifact(
     assert not destination.exists()
     assert sorted(path.name for path in tmp_path.iterdir()) == ["appdata", "grassdb"]
     assert len(state.package_requests) == 1
+
+    state.package_states = ["ready"]
+    state.expired_package_urls = 0
+    state.download_denials = 0
+    state.package_artifact_expired = False
+    state.missing_package_download = False
+    state.wrong_package_id = False
+    state.package_size_delta = 0
+    state.wrong_package_digest = False
+    state.download_status = 200
+    state.package_status_error = None
+    state.interrupt_download = False
+
+    itzi_cloud_pull(
+        argparse.Namespace(ensemble_id="ensemble-1", run_id=["run-0"], output=destination)
+    )
+
+    replaced = failure in (
+        "failed",
+        "package_artifact_expired",
+        "missing_package_download",
+        "not_found",
+        "gone",
+    )
+    assert len(state.package_requests) == (2 if replaced else 1)
+    assert state.package_gets[-1] == (
+        f"/execution-api/v1/ensembles/ensemble-1/packages/package-{2 if replaced else 1}",
+        "token-1",
+    )
+    assert destination.read_bytes() == state.package_archive
 
 
 def test_cloud_pull_preserves_existing_destination(
