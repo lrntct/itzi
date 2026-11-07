@@ -27,7 +27,6 @@ class PackageRequestSchema(BaseModel):
 class PackageRequestResponseSchema(BaseModel):
     package_id: str = Field(min_length=1)
     state: Literal["queued"] = "queued"
-    manifest_sha256: str
 
 
 class PackageDownloadSchema(BaseModel):
@@ -43,7 +42,6 @@ class PackageDownloadSchema(BaseModel):
 class PackageStatusResponseSchema(BaseModel):
     package_id: str
     state: Literal["queued", "running", "ready", "failed"]
-    manifest_sha256: str
     failure_code: Literal["", "package_export_failed"] = ""
     download: PackageDownloadSchema | None = None
 

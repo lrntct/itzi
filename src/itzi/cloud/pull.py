@@ -83,11 +83,8 @@ def wait_for_package(
             )
         _check_package_response(response)
         status = PackageStatusResponseSchema.model_validate(response.json())
-        if (
-            status.package_id != package.package_id
-            or status.manifest_sha256 != package.manifest_sha256
-        ):
-            raise ValueError("Package status does not match the requested package manifest")
+        if status.package_id != package.package_id:
+            raise ValueError("Package status does not match the requested package ID")
         if status.state == "failed":
             raise ValueError(
                 f"Package {package.package_id} failed ({status.failure_code or 'export failed'}); "

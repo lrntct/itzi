@@ -54,7 +54,6 @@ class FakeCloudState:
         self.package_artifact_expired = False
         self.missing_package_download = False
         self.wrong_package_id = False
-        self.wrong_manifest = False
         self.package_size_delta = 0
         self.wrong_package_digest = False
         self.download_status = 200
@@ -123,7 +122,7 @@ class FakeCloudRequestHandler(BaseHTTPRequestHandler):
                 return
             self._send_json(
                 202,
-                {"package_id": "package-1", "state": "queued", "manifest_sha256": "c" * 64},
+                {"package_id": "package-1", "state": "queued"},
             )
             return
         if path.startswith("/execution-api/v1/simulations/") and path.endswith("/runs"):
@@ -300,7 +299,6 @@ class FakeCloudRequestHandler(BaseHTTPRequestHandler):
                 {
                     "package_id": "wrong-package" if state.wrong_package_id else "package-1",
                     "state": package_state,
-                    "manifest_sha256": "d" * 64 if state.wrong_manifest else "c" * 64,
                     "failure_code": "package_export_failed" if package_state == "failed" else "",
                     "download": (
                         {
@@ -888,8 +886,7 @@ def test_cloud_pull_refreshes_signed_url_for_same_package(
         ("missing_package_download", "artifact is unavailable or expired"),
         ("expired_package_urls", "repeatedly expired or was denied"),
         ("download_denials", "repeatedly expired or was denied"),
-        ("wrong_package_id", "does not match the requested package manifest"),
-        ("wrong_manifest", "does not match the requested package manifest"),
+        ("wrong_package_id", "does not match the requested package ID"),
         ("too_short", "size mismatch"),
         ("too_long", "size mismatch"),
         ("wrong_package_digest", "SHA-256 mismatch"),
