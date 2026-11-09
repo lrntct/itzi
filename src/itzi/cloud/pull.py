@@ -43,6 +43,10 @@ class _PackageUnavailableError(ValueError):
     """The export must be replaced rather than resumed."""
 
 
+class _PackageNotFoundError(_PackageUnavailableError):
+    """The server has removed the package record."""
+
+
 def select_run_ids(email: str, ensemble_id: str, run_ids: tuple[str, ...]) -> tuple[str, ...]:
     """Use explicit Run IDs, or the selected Ensemble's account-scoped local records."""
     if not run_ids:
@@ -67,7 +71,12 @@ def _check_package_response(response: requests.Response) -> None:
         except ValueError:
             response.raise_for_status()
         else:
-            raise ValueError(
+            error_type = (
+                _PackageNotFoundError
+                if response.status_code == 404 and error.code == "package_not_found"
+                else ValueError
+            )
+            raise error_type(
                 f"Package request failed ({error.code}): {error.detail}; "
                 f"next action: {error.next_action}"
             )
@@ -161,35 +170,42 @@ def pull_result_package(
     selected = select_run_ids(email, ensemble_id, run_ids)
     # shortcut: concurrent pulls can duplicate exports; add locking if parallel pulls are needed.
     package_id = load_package_id(email, ensemble_id, selected)
-    if package_id is None:
-        with create_session() as session:
-            response = session.post(
-                urls.get_packages_endpoint(ensemble_id),
-                headers={"X-Session-Token": session_token},
-                json=PackageRequestSchema(run_ids=selected).model_dump(mode="json"),
-                timeout=30,
+    replaced_missing_package = False
+    while True:
+        if package_id is None:
+            with create_session() as session:
+                response = session.post(
+                    urls.get_packages_endpoint(ensemble_id),
+                    headers={"X-Session-Token": session_token},
+                    json=PackageRequestSchema(run_ids=selected).model_dump(mode="json"),
+                    timeout=30,
+                )
+            _check_package_response(response)
+            package_id = PackageRequestResponseSchema.model_validate(response.json()).package_id
+            save_package_id(email, ensemble_id, selected, package_id)
+            msgr.message(
+                f"Ensemble {ensemble_id}: package {package_id} requested for {len(selected)} runs"
             )
-        _check_package_response(response)
-        package_id = PackageRequestResponseSchema.model_validate(response.json()).package_id
-        save_package_id(email, ensemble_id, selected, package_id)
-        msgr.message(
-            f"Ensemble {ensemble_id}: package {package_id} requested for {len(selected)} runs"
-        )
-    else:
-        msgr.message(
-            f"Ensemble {ensemble_id}: resuming package {package_id} for {len(selected)} runs"
-        )
-    try:
-        for _ in range(3):
-            download = wait_for_package(ensemble_id, package_id, session_token)
-            if download.url_expires_at <= datetime.now(UTC):
+        else:
+            msgr.message(
+                f"Ensemble {ensemble_id}: resuming package {package_id} for {len(selected)} runs"
+            )
+        try:
+            for _ in range(3):
+                download = wait_for_package(ensemble_id, package_id, session_token)
+                if download.url_expires_at <= datetime.now(UTC):
+                    continue
+                if download_package(download, destination):
+                    return destination
+        except _PackageUnavailableError as error:
+            save_package_id(email, ensemble_id, selected, None)
+            if isinstance(error, _PackageNotFoundError) and not replaced_missing_package:
+                msgr.message(f"Package {package_id} was not found; requesting a new package")
+                package_id = None
+                replaced_missing_package = True
                 continue
-            if download_package(download, destination):
-                return destination
-    except _PackageUnavailableError:
-        save_package_id(email, ensemble_id, selected, None)
-        raise
-    raise ValueError(
-        f"Package {package_id} signed download URL repeatedly expired or was denied; "
-        "retry cloud pull later."
-    )
+            raise
+        raise ValueError(
+            f"Package {package_id} signed download URL repeatedly expired or was denied; "
+            "retry cloud pull later."
+        )

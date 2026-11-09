@@ -49,6 +49,7 @@ class FakeCloudState:
         self.package_states = ["queued", "running", "ready"]
         self.package_error: tuple[int, dict[str, str]] | None = None
         self.package_status_error: tuple[int, dict[str, str]] | None = None
+        self.missing_package_ids: set[str] = set()
         self.expired_package_urls = 0
         self.download_denials = 0
         self.package_artifact_expired = False
@@ -288,6 +289,16 @@ class FakeCloudRequestHandler(BaseHTTPRequestHandler):
                 return
             state = self.server.state
             state.package_gets.append((path, self.headers.get("X-Session-Token", "")))
+            if path.rsplit("/", 1)[1] in state.missing_package_ids:
+                self._send_json(
+                    404,
+                    {
+                        "detail": "The package was not found.",
+                        "code": "package_not_found",
+                        "next_action": "verify_resource_access",
+                    },
+                )
+                return
             if state.package_status_error is not None:
                 self._send_json(*state.package_status_error)
                 return
@@ -916,6 +927,51 @@ def test_cloud_pull_refreshes_signed_url_for_same_package(
     )
 
 
+@pytest.mark.parametrize("cached", [False, True])
+@pytest.mark.parametrize("replacement_missing", [False, True])
+def test_cloud_pull_replaces_missing_package_once(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    fake_cloud_server: FakeCloudServer,
+    cached: bool,
+    replacement_missing: bool,
+) -> None:
+    ctx = _configure_cloud_test_environment(monkeypatch, tmp_path, fake_cloud_server)
+    itzi_cloud_login(
+        argparse.Namespace(email="user@example.com", password="secret", logout=False, status=False)
+    )
+    state = fake_cloud_server.state
+    state.package_states = ["ready"]
+    missing_id = "deleted-package" if cached else "package-1"
+    replacement_id = "package-1" if cached else "package-2"
+    state.missing_package_ids.add(missing_id)
+    if cached:
+        ctx.metadata_storage.save_package_id(
+            "user@example.com", "ensemble-1", ("run-0",), missing_id
+        )
+    if replacement_missing:
+        state.missing_package_ids.add(replacement_id)
+    destination = tmp_path / "result.archive"
+    args = argparse.Namespace(ensemble_id="ensemble-1", run_id=["run-0"], output=destination)
+
+    if replacement_missing:
+        with pytest.raises(FatalError, match="package_not_found"):
+            itzi_cloud_pull(args)
+        assert not destination.exists()
+    else:
+        itzi_cloud_pull(args)
+        assert destination.read_bytes() == state.package_archive
+
+    assert len(state.package_requests) == (1 if cached else 2)
+    assert state.package_gets == [
+        (f"/execution-api/v1/ensembles/ensemble-1/packages/{package_id}", "token-1")
+        for package_id in (missing_id, replacement_id)
+    ]
+    assert ctx.metadata_storage.load_package_id("user@example.com", "ensemble-1", ("run-0",)) == (
+        None if replacement_missing else replacement_id
+    )
+
+
 @pytest.mark.parametrize("change", ["account", "ensemble", "runs", "destination"])
 def test_cloud_pull_scopes_resumable_packages_to_account_ensemble_and_runs(
     monkeypatch: pytest.MonkeyPatch,
@@ -1005,8 +1061,8 @@ def test_cloud_pull_failures_never_publish_unverified_artifact_and_allow_retry(
         state.package_status_error = (
             404,
             {
-                "detail": "Package not found",
-                "code": "package_not_found",
+                "detail": "Ensemble not found",
+                "code": "ensemble_not_found",
                 "next_action": "verify_resource_access",
             },
         )
