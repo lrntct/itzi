@@ -357,7 +357,7 @@ def _output_configuration(archive: BuiltArchive) -> dict[str, str | int | list[s
     if member.time.temporal_type == TemporalType.ABSOLUTE:
         if start is None:
             raise ValueError("Absolute YAML time requires a start timestamp")
-        absolute_start = start.astimezone(UTC).isoformat()
+        absolute_start = (start if start.tzinfo else start.astimezone()).isoformat()
 
     return {
         "selected_output_codes": codes,

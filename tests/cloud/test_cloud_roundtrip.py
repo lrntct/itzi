@@ -2049,11 +2049,11 @@ def test_cloud_push_repository_failure_preserves_progress_and_resumes(
                 "duration": "00:10:00",
                 "record_step": "00:05:00",
             },
-            "2026-09-30T06:30:00+00:00",
+            "2026-09-30T12:00:00+05:30",
         ),
         (
             {"start": "2026-09-30T12:00:00", "duration": "00:10:00", "record_step": "00:05:00"},
-            datetime(2026, 9, 30, 12).astimezone(UTC).isoformat(),
+            datetime(2026, 9, 30, 12).astimezone().isoformat(),
         ),
     ],
 )

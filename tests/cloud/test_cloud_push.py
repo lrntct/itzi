@@ -191,6 +191,12 @@ def test_absolute_time_coordinate_rejects_missing_times() -> None:
             False,
         ),
         (
+            "2007-06-25T10:00:00-03:30",
+            "2007-06-25T10:00:00",
+            "2007-06-25T13:30:00",
+            False,
+        ),
+        (
             "2007-06-25T10:00:00+02:00",
             "2007-06-25T10:00:00+02:00",
             "2007-06-25T08:00:00",
@@ -288,6 +294,14 @@ def test_absolute_archive_times_match_output_instants(
                 encoding=archive._encoding(ds, limits),
             )
             stored = xr.open_zarr(tmp_path / "input.zarr", consolidated=False)
+            units = stored.time_strds_rain_in_mapset.encoding["units"]
+            reference = datetime.fromisoformat(units.split(" since ")[1])
+            expected_reference = (
+                map_time if map_time.tzinfo else map_time.replace(tzinfo=start.tzinfo)
+            )
+            if expected_reference.tzinfo is None:
+                expected_reference = expected_reference.astimezone()
+            assert reference.isoformat() == expected_reference.isoformat()
             expected = np.array(
                 [np.datetime64(utc_start) + np.timedelta64(hour, "h") for hour in range(3)]
             )
@@ -299,10 +313,12 @@ def test_absolute_archive_times_match_output_instants(
             output = push._output_configuration(
                 types.SimpleNamespace(ensemble=types.SimpleNamespace(simulations=(member,)))
             )
-            assert (
-                output["absolute_start_time"]
-                == datetime.fromisoformat(utc_start).replace(tzinfo=UTC).isoformat()
-            )
+            absolute_start = output["absolute_start_time"]
+            assert isinstance(absolute_start, str)
+            assert absolute_start == (start if start.tzinfo else start.astimezone()).isoformat()
+            assert datetime.fromisoformat(absolute_start).astimezone(
+                UTC
+            ) == datetime.fromisoformat(utc_start).replace(tzinfo=UTC)
     finally:
         time.tzset()
 

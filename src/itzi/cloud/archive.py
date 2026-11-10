@@ -26,7 +26,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, timedelta, tzinfo
 from multiprocessing import get_context
 from pathlib import Path
-from typing import TypedDict
+from typing import NotRequired, TypedDict
 
 import numpy as np
 import pandas as pd
@@ -66,6 +66,7 @@ class Encoding(TypedDict):
     chunks: tuple[int, ...]
     serializer: BytesCodec
     compressors: list[ZstdCodec]
+    units: NotRequired[str]
 
 
 class InputLimits(BaseModel):
@@ -151,8 +152,9 @@ def convert_relative_time_coordinate(coord: xr.DataArray) -> xr.DataArray:
 def convert_absolute_time_coordinate(
     coord: xr.DataArray, source_timezone: tzinfo | None = None
 ) -> xr.DataArray:
-    """Encode GRASS times as UTC, using the source timezone or local for naive times."""
+    """Normalize GRASS instants to UTC and retain an offset in their CF encoding."""
     times = []
+    reference = None
     for value in coord.values:
         timestamp = pd.Timestamp(value)
         if not isinstance(timestamp, pd.Timestamp):
@@ -161,8 +163,13 @@ def convert_absolute_time_coordinate(
             timestamp = timestamp.tz_localize(
                 source_timezone or timestamp.to_pydatetime(warn=False).astimezone().tzinfo
             )
+        if reference is None:
+            reference = timestamp.isoformat()
         times.append(timestamp.tz_convert(UTC).tz_localize(None).to_datetime64())
-    return coord.copy(data=np.array(times))
+    converted_coord = coord.copy(data=np.array(times))
+    if reference is not None:
+        converted_coord.encoding["units"] = f"seconds since {reference}"
+    return converted_coord
 
 
 def get_input_format(session_token: str) -> InputFormat:
@@ -433,6 +440,8 @@ def _encoding(ds: xr.Dataset, limits: InputLimits) -> dict[str, Encoding]:
             serializer=BytesCodec(endian="little"),
             compressors=[ZstdCodec(level=3)],
         )
+        if "units" in var.encoding:
+            encoding[var_name_str]["units"] = var.encoding["units"]
     _check_limit(chunk_count, limits.INPUT_MAX_LOGICAL_CHUNKS, "logical chunks")
     return encoding
 
