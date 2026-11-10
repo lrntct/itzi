@@ -109,10 +109,11 @@ def add_cloud_subcommands(cloud_parser: argparse.ArgumentParser) -> None:
         help="Select a Run ID. Repeat for 1–100 runs; defaults to locally recorded runs.",
     )
     cloud_pull_parser.add_argument(
-        "-o",
         "--output",
-        required=True,
-        help="Destination archive file (must not already exist).",
+        help=(
+            "Keep the archive at this path (must not already exist). "
+            "Defaults to temporary storage; required with --download-only."
+        ),
     )
     cloud_pull_parser.add_argument(
         "-d",
@@ -145,7 +146,7 @@ def add_import_options(parser: argparse.ArgumentParser) -> None:
         help="Override the water-depth NULL threshold (default: saved, or 0).",
     )
     parser.add_argument(
-        "--overwrite", action="store_true", help="Overwrite existing GRASS outputs."
+        "-o", "--overwrite", action="store_true", help="Overwrite existing GRASS outputs."
     )
 
 

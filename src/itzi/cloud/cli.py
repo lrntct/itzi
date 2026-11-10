@@ -17,7 +17,9 @@ from __future__ import annotations
 import argparse
 import os
 import tarfile
+from contextlib import ExitStack
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import itzi.messenger as msgr
 from itzi.messenger import VerbosityLevel
@@ -143,19 +145,28 @@ def itzi_cloud_pull(cli_args: argparse.Namespace) -> None:
 
     os.environ["ITZI_VERBOSE"] = str(VerbosityLevel.MESSAGE)
 
-    email = check_login()
-
     try:
-        path = pull_result_package(
-            session_token=get_token(email),
-            email=email,
-            ensemble_id=cli_args.ensemble_id,
-            run_ids=tuple(cli_args.run_id),
-            destination=Path(cli_args.output),
-        )
-        msgr.message(f"Verified result package saved to {path}")
-        if not cli_args.download_only:
-            _import_package(path, cli_args, email=email)
+        if cli_args.download_only and cli_args.output is None:
+            raise ValueError("--download-only requires --output")
+        email = check_login()
+        with ExitStack() as stack:
+            destination = (
+                Path(cli_args.output)
+                if cli_args.output is not None
+                else Path(stack.enter_context(TemporaryDirectory(prefix="itzi-package-")))
+                / "results.tzst"
+            )
+            path = pull_result_package(
+                session_token=get_token(email),
+                email=email,
+                ensemble_id=cli_args.ensemble_id,
+                run_ids=tuple(cli_args.run_id),
+                destination=destination,
+            )
+            if cli_args.output is not None:
+                msgr.message(f"Verified result package saved to {path}")
+            if not cli_args.download_only:
+                _import_package(path, cli_args, email=email)
     except (
         requests.RequestException,
         ValueError,

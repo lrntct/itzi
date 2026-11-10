@@ -96,7 +96,7 @@ def test_cloud_pull_parser_accepts_run_selection_and_destination() -> None:
             "run-2",
             "--run-id",
             "run-1",
-            "-o",
+            "--output",
             "results.archive",
         ]
     )
@@ -109,14 +109,13 @@ def test_cloud_pull_parser_accepts_run_selection_and_destination() -> None:
 
 
 def test_cloud_pull_parser_defaults_to_recorded_runs() -> None:
-    args = build_parser().parse_args(
-        ["cloud", "pull", "ensemble-123", "--output", "results.archive"]
-    )
+    args = build_parser().parse_args(["cloud", "pull", "ensemble-123"])
     assert args.run_id == []
+    assert args.output is None
 
 
-@pytest.mark.parametrize("arguments", [[], ["ensemble-123"], ["--output", "results.archive"]])
-def test_cloud_pull_requires_ensemble_and_destination(arguments: list[str]) -> None:
+@pytest.mark.parametrize("arguments", [[], ["--output", "results.archive"]])
+def test_cloud_pull_requires_ensemble(arguments: list[str]) -> None:
     with pytest.raises(SystemExit):
         build_parser().parse_args(["cloud", "pull", *arguments])
 
@@ -181,7 +180,7 @@ def test_main_prints_cloud_help_without_subcommand(capsys):
         (["cloud", "push", "-p", "proj-abc123", "sim.yaml"], "itzi_cloud_push"),
         (["cloud", "status"], "itzi_cloud_status"),
         (["cloud", "project", "--list"], "itzi_cloud_project"),
-        (["cloud", "pull", "ensemble-123", "-o", "results.archive"], "itzi_cloud_pull"),
+        (["cloud", "pull", "ensemble-123", "--output", "results.archive"], "itzi_cloud_pull"),
         (["cloud", "import", "results.tzst"], "itzi_cloud_import"),
     ],
 )

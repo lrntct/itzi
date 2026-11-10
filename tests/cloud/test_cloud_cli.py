@@ -18,7 +18,7 @@ from itzi.cloud.cli import (
     itzi_cloud_status,
 )
 from itzi.grass.session import GrassParams
-from itzi.messenger import VerbosityLevel
+from itzi.messenger import FatalError, VerbosityLevel
 
 
 def install_stub_module(monkeypatch, module_name: str, **attrs) -> ModuleType:
@@ -309,6 +309,66 @@ def test_itzi_cloud_pull_downloads_verified_package(monkeypatch: pytest.MonkeyPa
     ]
 
 
+@pytest.mark.parametrize("failure", [None, "download", "import"])
+def test_cloud_pull_cleans_temporary_archive(
+    monkeypatch: pytest.MonkeyPatch, failure: str | None
+) -> None:
+    paths: list[Path] = []
+    imported: list[Path] = []
+    install_stub_module(
+        monkeypatch,
+        "itzi.cloud.auth",
+        check_login=lambda: "email",
+        get_token=lambda _email: "token",
+    )
+
+    def download(
+        session_token: str,
+        email: str,
+        ensemble_id: str,
+        run_ids: tuple[str, ...],
+        destination: Path,
+    ) -> Path:
+        assert not destination.exists()
+        destination.write_bytes(b"verified package")
+        paths.append(destination)
+        if failure == "download":
+            raise OSError("download failed")
+        return destination
+
+    def import_package(path: Path, args: argparse.Namespace, *, email: str) -> None:
+        assert path.read_bytes() == b"verified package"
+        imported.append(path)
+        if failure == "import":
+            raise RuntimeError("import failed")
+
+    install_stub_module(monkeypatch, "itzi.cloud.pull", pull_result_package=download)
+    monkeypatch.setattr("itzi.cloud.cli._import_package", import_package)
+    args = build_parser().parse_args(["cloud", "pull", "ensemble"])
+    if failure is None:
+        itzi_cloud_pull(args)
+    else:
+        with pytest.raises(FatalError, match=f"{failure} failed"):
+            itzi_cloud_pull(args)
+    assert len(paths) == 1
+    assert not paths[0].parent.exists()
+    assert imported == ([] if failure == "download" else paths)
+
+
+def test_cloud_pull_download_only_requires_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_stub_module(
+        monkeypatch,
+        "itzi.cloud.auth",
+        check_login=lambda: pytest.fail("Invalid arguments must not authenticate"),
+        get_token=lambda _email: pytest.fail("Invalid arguments must not request a token"),
+    )
+    args = build_parser().parse_args(["cloud", "pull", "ensemble", "--download-only"])
+    with pytest.raises(FatalError, match="--download-only requires --output"):
+        itzi_cloud_pull(args)
+
+
 @pytest.mark.parametrize("offline", [False, True])
 def test_package_import_cli_forwards_destination_and_presentation(
     monkeypatch: pytest.MonkeyPatch, offline: bool
@@ -335,7 +395,7 @@ def test_package_import_cli_forwards_destination_and_presentation(
     argv = (
         ["cloud", "import", "saved.tzst"]
         if offline
-        else ["cloud", "pull", "ensemble", "--run-id", "run", "-o", "saved.tzst"]
+        else ["cloud", "pull", "ensemble", "--run-id", "run", "--output", "saved.tzst"]
     )
     args = build_parser().parse_args(
         [
