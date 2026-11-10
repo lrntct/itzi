@@ -145,7 +145,8 @@ class TestItziTutorial:
         # Test consistency of stats file
         stat_file_path = pathlib.Path("nc_itzi_tutorial.csv")
         df_stats = pd.read_csv(stat_file_path, na_values="-")
-        df_stats.set_index("simulation_time", drop=True, inplace=True, verify_integrity=True)
+        df_stats.set_index("simulation_time", drop=True, inplace=True)
+        assert df_stats.index.is_unique
         df_stats.index = pd.to_timedelta(df_stats.index)
         volume_columns = [
             "boundary_volume",
@@ -203,7 +204,8 @@ class TestItziTutorial:
         # Test consistency of stats file
         stat_file_path = pathlib.Path("nc_itzi_tutorial_drainage.csv")
         df_stats = pd.read_csv(stat_file_path, na_values="-")
-        df_stats.set_index("simulation_time", drop=True, inplace=True, verify_integrity=True)
+        df_stats.set_index("simulation_time", drop=True, inplace=True)
+        assert df_stats.index.is_unique
         df_stats.index = pd.to_timedelta(df_stats.index)
         volume_columns = [
             "boundary_volume",
@@ -228,7 +230,8 @@ class TestItziTutorial:
         )
         # To pandas
         df_node = pd.read_csv(StringIO(node_results), sep="|")[select_cols]
-        df_node.set_index("start_time", drop=True, inplace=True, verify_integrity=True)
+        df_node.set_index("start_time", drop=True, inplace=True)
+        assert df_node.index.is_unique
         # convert indices to timedelta
         df_node.index = pd.to_timedelta(df_node.index, unit="s")
         # to series
