@@ -8,13 +8,16 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
+from itzi.cli_parser import build_parser
 from itzi.cloud.cli import (
+    itzi_cloud_import,
     itzi_cloud_login,
     itzi_cloud_project,
     itzi_cloud_pull,
     itzi_cloud_push,
     itzi_cloud_status,
 )
+from itzi.grass.session import GrassParams
 from itzi.messenger import VerbosityLevel
 
 
@@ -289,6 +292,7 @@ def test_itzi_cloud_pull_downloads_verified_package(monkeypatch: pytest.MonkeyPa
             ensemble_id="ensemble-123",
             run_id=["run-2", "run-1"],
             output="results.archive",
+            download_only=True,
         )
     )
 
@@ -302,4 +306,67 @@ def test_itzi_cloud_pull_downloads_verified_package(monkeypatch: pytest.MonkeyPa
             "run_ids": ("run-2", "run-1"),
             "destination": Path("results.archive"),
         }
+    ]
+
+
+@pytest.mark.parametrize("offline", [False, True])
+def test_package_import_cli_forwards_destination_and_presentation(
+    monkeypatch: pytest.MonkeyPatch, offline: bool
+) -> None:
+    calls = []
+    install_stub_module(
+        monkeypatch,
+        "itzi.cloud.result_import",
+        import_result_package=lambda path, **kwargs: calls.append((path, kwargs)),
+    )
+    install_stub_module(
+        monkeypatch,
+        "itzi.cloud.auth",
+        check_login=lambda: (
+            pytest.fail("Offline import must not authenticate") if offline else "email"
+        ),
+        get_token=lambda _email: "token",
+    )
+    install_stub_module(
+        monkeypatch,
+        "itzi.cloud.pull",
+        pull_result_package=lambda **kwargs: kwargs["destination"],
+    )
+    argv = (
+        ["cloud", "import", "saved.tzst"]
+        if offline
+        else ["cloud", "pull", "ensemble", "--run-id", "run", "-o", "saved.tzst"]
+    )
+    args = build_parser().parse_args(
+        [
+            *argv,
+            "--gisdb",
+            "/data",
+            "--project",
+            "location",
+            "--mapset",
+            "output",
+            "--prefix",
+            "chosen",
+            "--hmin",
+            "0.01",
+            "--overwrite",
+        ]
+    )
+    (itzi_cloud_import if offline else itzi_cloud_pull)(args)
+    assert calls == [
+        (
+            Path("saved.tzst"),
+            {
+                "email": None if offline else "email",
+                "destination": GrassParams(
+                    grassdata="/data", location="location", mapset="output"
+                ),
+                "prefix": "chosen",
+                "hmin": 0.01,
+                "overwrite": True,
+                "expected_ensemble_id": None if offline else "ensemble",
+                "expected_run_ids": () if offline else ("run",),
+            },
+        )
     ]

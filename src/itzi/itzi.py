@@ -40,6 +40,7 @@ from pathlib import Path
 import itzi.messenger as msgr
 from itzi import cli_parser
 from itzi.cloud.cli import (
+    itzi_cloud_import,
     itzi_cloud_login,
     itzi_cloud_project,
     itzi_cloud_pull,
@@ -89,6 +90,7 @@ def main(argv: list[str] | None = None) -> int:
             "status": itzi_cloud_status,
             "project": itzi_cloud_project,
             "pull": itzi_cloud_pull,
+            "import": itzi_cloud_import,
         }
 
         if args.command == "cloud":

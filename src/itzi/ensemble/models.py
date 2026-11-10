@@ -278,6 +278,16 @@ def check_batch_limits(ensembles: tuple[ExpandedEnsemble, ...]) -> None:
         )
 
 
+def render_raster_names(
+    outputs: OutputTemplates, *, ensemble: str, simulation: str
+) -> dict[str, str]:
+    """Share the native raster naming policy with saved cloud output contexts."""
+    if outputs.raster_prefix is None:
+        return {}
+    prefix = render_template(outputs.raster_prefix, ensemble=ensemble, simulation=simulation)
+    return {variable: f"{prefix}_{variable}" for variable in outputs.raster_variables}
+
+
 def check_unique_ensemble_ids(ensembles: tuple[ExpandedEnsemble, ...]) -> None:
     """Reject a batch-global duplicate ensemble identifier."""
     seen: set[str] = set()

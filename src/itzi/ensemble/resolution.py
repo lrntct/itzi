@@ -32,6 +32,7 @@ from itzi.ensemble.models import (
     ResolvedSimulation,
     ValidationFailure,
     format_duration,
+    render_raster_names,
     render_template,
 )
 from itzi.grass.names import derived_drainage_table_names, derived_record_name
@@ -226,16 +227,9 @@ def _render_artifacts(
     simulation_id: str,
     mapset: str,
 ) -> ArtifactSummary:
-    output_map_names: dict[str, str] = {}
-    if expanded.outputs.raster_prefix is not None:
-        prefix = render_template(
-            expanded.outputs.raster_prefix,
-            ensemble=expanded.ensemble_id,
-            simulation=simulation_id,
-        )
-        output_map_names = {
-            variable: f"{prefix}_{variable}" for variable in expanded.outputs.raster_variables
-        }
+    output_map_names = render_raster_names(
+        expanded.outputs, ensemble=expanded.ensemble_id, simulation=simulation_id
+    )
     drainage_output = (
         render_template(
             expanded.outputs.drainage_dataset,

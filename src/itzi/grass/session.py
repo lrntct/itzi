@@ -30,6 +30,7 @@ import itzi.messenger as msgr
 if TYPE_CHECKING:
     from grass.lib.gis import Cell_head
     from grass.script.setup import SessionHandle
+    from itzi_core import DomainData
 
     from itzi.ensemble.models import EffectiveMask
 
@@ -205,8 +206,9 @@ class GrassSessionManager:
     session remains available; only sessions acquired by this manager are finished.
     """
 
-    def __init__(self, grass_params: GrassParams) -> None:
+    def __init__(self, grass_params: GrassParams, *, domain: DomainData | None = None) -> None:
         self.grass_params = grass_params
+        self.domain = domain
         self.grass_session: SessionHandle | None = None
         self.effective_mask: EffectiveMask
         self._contexts: ExitStack | None = None
@@ -327,7 +329,21 @@ class GrassSessionManager:
             _refresh_session()
         self.effective_mask = resolve_effective_mask(params.mask)
         # Explicit regions must not consult caller-only saved-region overrides.
-        if params.region is not None:
+        if self.domain is not None:
+            os.environ.pop("GRASS_REGION", None)
+            os.environ.pop("WIND_OVERRIDE", None)
+            domain = self.domain
+            contexts.enter_context(
+                gscript.RegionManagerEnv(
+                    n=domain.north,
+                    s=domain.south,
+                    e=domain.east,
+                    w=domain.west,
+                    rows=domain.rows,
+                    cols=domain.cols,
+                )
+            )
+        elif params.region is not None:
             os.environ.pop("GRASS_REGION", None)
             os.environ.pop("WIND_OVERRIDE", None)
             contexts.enter_context(gscript.RegionManagerEnv(region=params.region))

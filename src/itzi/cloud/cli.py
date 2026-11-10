@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import tarfile
 from pathlib import Path
 
 import itzi.messenger as msgr
@@ -134,7 +135,7 @@ def itzi_cloud_project(cli_args: argparse.Namespace) -> None:
 
 
 def itzi_cloud_pull(cli_args: argparse.Namespace) -> None:
-    """Request and download a verified result package for an Ensemble's Runs."""
+    """Download verified results and restore native GRASS outputs by default."""
     import requests
 
     from itzi.cloud.auth import check_login, get_token
@@ -152,6 +153,44 @@ def itzi_cloud_pull(cli_args: argparse.Namespace) -> None:
             run_ids=tuple(cli_args.run_id),
             destination=Path(cli_args.output),
         )
-    except (requests.RequestException, ValueError, OSError) as error:
+        msgr.message(f"Verified result package saved to {path}")
+        if not cli_args.download_only:
+            _import_package(path, cli_args, email=email)
+    except (
+        requests.RequestException,
+        ValueError,
+        OSError,
+        RuntimeError,
+        tarfile.TarError,
+    ) as error:
         msgr.fatal(f"Cloud pull failed: {error}")
-    msgr.message(f"Verified result package saved to {path}")
+
+
+def _import_package(path: Path, cli_args: argparse.Namespace, *, email: str | None = None) -> None:
+    from itzi.cloud.result_import import import_result_package
+    from itzi.grass.session import GrassParams
+
+    import_result_package(
+        path,
+        email=email,
+        destination=GrassParams(
+            grassdata=cli_args.gisdb,
+            location=cli_args.project,
+            mapset=cli_args.mapset,
+            grass_bin=cli_args.grass_bin,
+        ),
+        prefix=cli_args.prefix,
+        hmin=cli_args.hmin,
+        overwrite=cli_args.overwrite,
+        expected_ensemble_id=getattr(cli_args, "ensemble_id", None),
+        expected_run_ids=tuple(getattr(cli_args, "run_id", ())),
+    )
+
+
+def itzi_cloud_import(cli_args: argparse.Namespace) -> None:
+    """Import a saved package without authentication or an API connection."""
+    os.environ["ITZI_VERBOSE"] = str(VerbosityLevel.MESSAGE)
+    try:
+        _import_package(Path(cli_args.package), cli_args)
+    except (ValueError, OSError, RuntimeError, tarfile.TarError) as error:
+        msgr.fatal(f"Result import failed: {error}")

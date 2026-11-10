@@ -14,7 +14,6 @@ GNU General Public License for more details.
 
 from __future__ import annotations
 
-import copy
 import os
 from collections.abc import Mapping
 from datetime import datetime, timedelta
@@ -449,7 +448,7 @@ class GrassInterface:
         if msgr.verbosity() <= 2:
             msgr.message("Registering maps in temporal framework...")
         # Set GRASS verbosity to -1 to avoid superfluous messages about semantic labels
-        grass_verbosity = copy.deepcopy(os.environ["GRASS_VERBOSE"])
+        grass_verbosity = os.environ.get("GRASS_VERBOSE")
         if stds_type == "stvds" and grass_verbosity != "-1":
             os.environ["GRASS_VERBOSE"] = "-1"
         # create stds
@@ -493,4 +492,7 @@ class GrassInterface:
         )
         # Restore GRASS verbosity
         if stds_type == "stvds" and grass_verbosity != "-1":
-            os.environ["GRASS_VERBOSE"] = grass_verbosity
+            if grass_verbosity is None:
+                os.environ.pop("GRASS_VERBOSE", None)
+            else:
+                os.environ["GRASS_VERBOSE"] = grass_verbosity

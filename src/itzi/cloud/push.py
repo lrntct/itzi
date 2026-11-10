@@ -32,6 +32,7 @@ from itzi.cloud.archive import BuiltArchive, source_names
 from itzi.cloud.http import create_session
 from itzi.cloud.metadata_storage import (
     EnsembleDraft,
+    MemberOutputContext,
     get_or_create_ensemble_draft,
     reset_ensemble_draft,
     save_ensemble_draft,
@@ -45,6 +46,7 @@ from itzi.cloud.schemas import (
     RunResponseSchema,
     SimulationResponseSchema,
 )
+from itzi.ensemble.models import render_raster_names
 
 VALIDATION_WAIT_SECONDS = 60
 VALIDATION_POLL_SECONDS = 2
@@ -96,6 +98,20 @@ def create_ensemble(
         source.yaml_sha256,
         force=force,
     )
+    member_outputs = {}
+    for index, (expanded, simulation) in enumerate(
+        zip(archive.ensemble.simulations, archive.simulations, strict=True)
+    ):
+        names = render_raster_names(
+            expanded.outputs,
+            ensemble=archive.ensemble.ensemble_id,
+            simulation=simulation.simulation_id,
+        )
+        member_outputs[index] = MemberOutputContext(
+            output_map_names=names, hmin=simulation.simulation_config.surface_flow_parameters.hmin
+        )
+    draft = draft.model_copy(update={"member_outputs": member_outputs})
+    save_ensemble_draft(draft)
     if draft.ensemble_id is not None and draft.input_id is not None:
         msgr.message(
             f"{archive.ensemble.ensemble_id}: checking saved Ensemble {draft.ensemble_id}…"

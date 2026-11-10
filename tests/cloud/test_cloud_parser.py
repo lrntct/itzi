@@ -121,21 +121,39 @@ def test_cloud_pull_requires_ensemble_and_destination(arguments: list[str]) -> N
         build_parser().parse_args(["cloud", "pull", *arguments])
 
 
-@pytest.mark.parametrize("option", ["--gisdb", "--project", "--mapset", "--overwrite"])
-def test_cloud_pull_rejects_legacy_import_options(option: str) -> None:
-    with pytest.raises(SystemExit):
-        build_parser().parse_args(
-            ["cloud", "pull", "ensemble-123", "--output", "results.archive", option, "value"]
-        )
+def test_cloud_pull_accepts_import_overrides() -> None:
+    args = build_parser().parse_args(
+        [
+            "cloud",
+            "pull",
+            "ensemble-123",
+            "--output",
+            "results.archive",
+            "--gisdb",
+            "/data",
+            "--project",
+            "location",
+            "--mapset",
+            "results",
+            "--prefix",
+            "study",
+            "--hmin",
+            "0.01",
+            "--overwrite",
+        ]
+    )
+    assert (args.gisdb, args.project, args.mapset) == ("/data", "location", "results")
+    assert args.prefix == "study" and args.hmin == 0.01 and args.overwrite
+    assert not args.download_only
 
 
-def test_cloud_pull_help_describes_contract_gate(capsys) -> None:
+def test_cloud_pull_help_describes_import(capsys) -> None:
     with pytest.raises(SystemExit) as exc_info:
         build_parser().parse_args(["cloud", "pull", "--help"])
     assert exc_info.value.code == 0
     text = " ".join(capsys.readouterr().out.split())
-    assert "GRASS import requires a published" in text
-    assert "format and is not yet available" in text
+    assert "original output names and GRASS destination" in text
+    assert "--download-only" in text
     assert "--run-id" in text and "--output" in text
     assert "fingerprint" not in text
 
@@ -152,7 +170,7 @@ def test_main_prints_cloud_help_without_subcommand(capsys):
     captured = capsys.readouterr()
     assert "usage:" in captured.out
     assert " cloud [-h]" in captured.out
-    assert "{login,push,status,project,pull}" in captured.out
+    assert "{login,push,status,project,pull,import}" in captured.out
     assert captured.err == ""
 
 
@@ -164,6 +182,7 @@ def test_main_prints_cloud_help_without_subcommand(capsys):
         (["cloud", "status"], "itzi_cloud_status"),
         (["cloud", "project", "--list"], "itzi_cloud_project"),
         (["cloud", "pull", "ensemble-123", "-o", "results.archive"], "itzi_cloud_pull"),
+        (["cloud", "import", "results.tzst"], "itzi_cloud_import"),
     ],
 )
 def test_main_dispatches_cloud_commands(monkeypatch, argv, expected_handler):
@@ -175,6 +194,7 @@ def test_main_dispatches_cloud_commands(monkeypatch, argv, expected_handler):
         "itzi_cloud_status",
         "itzi_cloud_project",
         "itzi_cloud_pull",
+        "itzi_cloud_import",
     ]:
         monkeypatch.setattr(
             f"itzi.itzi.{handler_name}",

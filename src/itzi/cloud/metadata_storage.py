@@ -31,6 +31,15 @@ from itzi.grass.session import GrassParams
 METADATA_VERSION = "1.0"
 
 
+class MemberOutputContext(BaseModel):
+    """Local presentation settings, independent of the cloud result encoding."""
+
+    model_config = ConfigDict(frozen=True)
+
+    output_map_names: dict[str, str]
+    hmin: float = Field(ge=0, allow_inf_nan=False)
+
+
 class EnsembleDraft(BaseModel):
     """Locally durable identity and server IDs for one YAML document and Input."""
 
@@ -50,6 +59,7 @@ class EnsembleDraft(BaseModel):
     confirmation_state: str | None = None
     simulation_ids: dict[int, str] = Field(default_factory=dict)
     run_ids: dict[int, str] = Field(default_factory=dict)
+    member_outputs: dict[int, MemberOutputContext] = Field(default_factory=dict)
 
 
 @with_config(ConfigDict(extra="allow"))
@@ -119,10 +129,12 @@ def reset_ensemble_draft(draft: EnsembleDraft) -> EnsembleDraft:
     return updated
 
 
-def list_ensemble_drafts(email: str) -> tuple[EnsembleDraft, ...]:
-    """Return locally recorded submissions for the authenticated account."""
+def list_ensemble_drafts(email: str | None) -> tuple[EnsembleDraft, ...]:
+    """Return local submissions, optionally restricted to one account."""
     metadata = _load_metadata_file(get_metadata_file_path())
-    return tuple(draft for draft in metadata.ensembles.values() if draft.email == email)
+    return tuple(
+        draft for draft in metadata.ensembles.values() if email is None or draft.email == email
+    )
 
 
 def _package_key(email: str, ensemble_id: str, run_ids: tuple[str, ...]) -> str:

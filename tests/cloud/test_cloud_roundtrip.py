@@ -709,7 +709,11 @@ def test_cloud_login_status_pull_with_fake_provider(
     assert not any("completed" in message or "PROGRESS" in message for message in status_messages)
 
     destination = tmp_path / "verified.archive"
-    itzi_cloud_pull(argparse.Namespace(ensemble_id="ensemble-1", run_id=[], output=destination))
+    itzi_cloud_pull(
+        argparse.Namespace(
+            ensemble_id="ensemble-1", run_id=[], output=destination, download_only=True
+        )
+    )
     state = fake_cloud_server.state
     assert destination.read_bytes() == state.package_archive
     assert state.package_requests == [
@@ -849,6 +853,7 @@ def test_cloud_pull_surfaces_api_detail_when_results_are_unavailable(
                 ensemble_id="ensemble-1",
                 run_id=["run-0"],
                 output=tmp_path / "results.archive",
+                download_only=True,
             )
         )
 
@@ -869,7 +874,7 @@ def test_cloud_pull_resumes_package_after_timeout(
     state.package_states = [package_state]
     destination = tmp_path / "result.archive"
     args = argparse.Namespace(
-        ensemble_id="ensemble-1", run_id=["run-0", "run-1"], output=destination
+        ensemble_id="ensemble-1", run_id=["run-0", "run-1"], output=destination, download_only=True
     )
 
     for _ in range(2):
@@ -907,7 +912,10 @@ def test_cloud_pull_refreshes_signed_url_for_same_package(
 
     itzi_cloud_pull(
         argparse.Namespace(
-            ensemble_id="ensemble-unknown", run_id=["run-2", "run-0"], output=destination
+            ensemble_id="ensemble-unknown",
+            run_id=["run-2", "run-0"],
+            output=destination,
+            download_only=True,
         )
     )
 
@@ -952,7 +960,9 @@ def test_cloud_pull_replaces_missing_package_once(
     if replacement_missing:
         state.missing_package_ids.add(replacement_id)
     destination = tmp_path / "result.archive"
-    args = argparse.Namespace(ensemble_id="ensemble-1", run_id=["run-0"], output=destination)
+    args = argparse.Namespace(
+        ensemble_id="ensemble-1", run_id=["run-0"], output=destination, download_only=True
+    )
 
     if replacement_missing:
         with pytest.raises(FatalError, match="package_not_found"):
@@ -987,7 +997,10 @@ def test_cloud_pull_scopes_resumable_packages_to_account_ensemble_and_runs(
     state = fake_cloud_server.state
     state.package_states = ["queued"]
     args = argparse.Namespace(
-        ensemble_id="ensemble-1", run_id=["run-0"], output=tmp_path / "result.archive"
+        ensemble_id="ensemble-1",
+        run_id=["run-0"],
+        output=tmp_path / "result.archive",
+        download_only=True,
     )
     with pytest.raises(FatalError, match="still queued"):
         itzi_cloud_pull(args)
@@ -1072,7 +1085,9 @@ def test_cloud_pull_failures_never_publish_unverified_artifact_and_allow_retry(
 
     with pytest.raises(FatalError, match=message):
         itzi_cloud_pull(
-            argparse.Namespace(ensemble_id="ensemble-1", run_id=["run-0"], output=destination)
+            argparse.Namespace(
+                ensemble_id="ensemble-1", run_id=["run-0"], output=destination, download_only=True
+            )
         )
 
     assert not destination.exists()
@@ -1092,7 +1107,9 @@ def test_cloud_pull_failures_never_publish_unverified_artifact_and_allow_retry(
     state.interrupt_download = False
 
     itzi_cloud_pull(
-        argparse.Namespace(ensemble_id="ensemble-1", run_id=["run-0"], output=destination)
+        argparse.Namespace(
+            ensemble_id="ensemble-1", run_id=["run-0"], output=destination, download_only=True
+        )
     )
 
     replaced = failure in (
@@ -1124,7 +1141,9 @@ def test_cloud_pull_preserves_existing_destination(
 
     with pytest.raises(FatalError, match="Destination already exists"):
         itzi_cloud_pull(
-            argparse.Namespace(ensemble_id="ensemble-1", run_id=["run-0"], output=destination)
+            argparse.Namespace(
+                ensemble_id="ensemble-1", run_id=["run-0"], output=destination, download_only=True
+            )
         )
 
     assert destination.read_bytes() == b"existing user file"
@@ -1165,6 +1184,7 @@ def test_cloud_pull_checks_selection_before_requesting_package(
         ensemble_id="other-ensemble" if selection == "other_account" else "unknown-ensemble",
         run_id=runs,
         output=destination,
+        download_only=True,
     )
     if selection == "maximum":
         itzi_cloud_pull(args)
@@ -1264,6 +1284,44 @@ def _fake_archive(
         path=path,
         size_bytes=path.stat().st_size,
         sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+    )
+
+
+def test_cloud_push_saves_original_output_context(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, fake_cloud_server: FakeCloudServer
+) -> None:
+    from itzi.cloud import auth, push
+
+    ctx = _configure_cloud_test_environment(monkeypatch, tmp_path, fake_cloud_server)
+    itzi_cloud_login(
+        argparse.Namespace(email="user@example.com", password="secret", logout=False, status=False)
+    )
+    path = tmp_path / "input.tzst"
+    path.write_bytes(b"input")
+    archive = _fake_archive(
+        path,
+        tmp_path / "study.yaml",
+        ctx.grass_params,
+        members=2,
+        outputs={"rasters": {"prefix": "{ensemble}_{simulation}", "variables": ["water_depth"]}},
+    )
+    draft = push.create_ensemble(
+        archive,
+        project_id="project",
+        email="user@example.com",
+        session_token=auth.get_token("user@example.com"),
+    )
+    stored = ctx.metadata_storage.list_ensemble_drafts("user@example.com")[0]
+    assert stored == draft
+    assert stored.member_outputs[0].output_map_names == {
+        "water_depth": "study-0_member-0-0_water_depth"
+    }
+    assert stored.member_outputs[1].output_map_names == {
+        "water_depth": "study-0_member-0-1_water_depth"
+    }
+    assert (
+        stored.member_outputs[0].hmin
+        == archive.simulations[0].simulation_config.surface_flow_parameters.hmin
     )
 
 

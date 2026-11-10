@@ -90,10 +90,10 @@ def add_cloud_subcommands(cloud_parser: argparse.ArgumentParser) -> None:
 
     cloud_pull_parser = cloud_subparser.add_parser(
         "pull",
-        help="Download a verified result package for selected cloud Runs.",
+        help="Download cloud results and import them to GRASS.",
         description=(
-            "Download a verified result package. GRASS import requires a published "
-            "result-package format and is not yet available."
+            "Download and import results using the original output names and GRASS destination "
+            "when locally recorded. Otherwise use an active session or an explicit destination."
         ),
     )
     cloud_pull_parser.set_defaults(cloud_handler="pull")
@@ -113,6 +113,39 @@ def add_cloud_subcommands(cloud_parser: argparse.ArgumentParser) -> None:
         "--output",
         required=True,
         help="Destination archive file (must not already exist).",
+    )
+    cloud_pull_parser.add_argument(
+        "-d",
+        "--download-only",
+        action="store_true",
+        help="Save the archive without importing to GRASS.",
+    )
+    add_import_options(cloud_pull_parser)
+
+    import_parser = cloud_subparser.add_parser(
+        "import", help="Import a saved result package to GRASS without contacting the API."
+    )
+    import_parser.set_defaults(cloud_handler="import")
+    import_parser.add_argument("package", help="Result package (.tzst) to import.")
+    add_import_options(import_parser)
+
+
+def add_import_options(parser: argparse.ArgumentParser) -> None:
+    """Keep downloaded and offline imports on the same output policy."""
+    parser.add_argument("--gisdb", help="Override the GRASS database directory.")
+    parser.add_argument("--project", help="Override the GRASS project (location).")
+    parser.add_argument("--mapset", help="Override the destination mapset.")
+    parser.add_argument("--grass-bin", help="Path to the GRASS executable.")
+    parser.add_argument(
+        "--prefix", help="Output prefix; member and Run identities keep names unique."
+    )
+    parser.add_argument(
+        "--hmin",
+        type=float,
+        help="Override the water-depth NULL threshold (default: saved, or 0).",
+    )
+    parser.add_argument(
+        "--overwrite", action="store_true", help="Overwrite existing GRASS outputs."
     )
 
 
