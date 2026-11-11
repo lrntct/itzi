@@ -144,7 +144,9 @@ def _create_manifest(
     path.parent.mkdir(parents=True, exist_ok=True)
     mode = "w" if overwrite else "x"
     with path.open(mode, encoding="utf-8") as file_obj:
-        yaml.safe_dump(_manifest_document(ensemble, states), file_obj, sort_keys=False)
+        yaml.safe_dump(
+            _manifest_document(ensemble, states), file_obj, sort_keys=False, allow_unicode=True
+        )
 
 
 def _update_manifest(path: Path, ensemble: ExpandedEnsemble, states: dict[str, dict]) -> None:
@@ -152,7 +154,9 @@ def _update_manifest(path: Path, ensemble: ExpandedEnsemble, states: dict[str, d
         mode="w", encoding="utf-8", dir=path.parent, prefix=f".{path.name}.", delete=False
     ) as file_obj:
         temporary_path = Path(file_obj.name)
-        yaml.safe_dump(_manifest_document(ensemble, states), file_obj, sort_keys=False)
+        yaml.safe_dump(
+            _manifest_document(ensemble, states), file_obj, sort_keys=False, allow_unicode=True
+        )
         file_obj.flush()
         os.fsync(file_obj.fileno())
     try:

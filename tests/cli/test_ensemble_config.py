@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from typing import cast
 
 import pytest
+import yaml
 from itzi_core import InfiltrationModelType, SurfaceFlowParameters, TemporalType
 from itzi_core.const import DefaultValues
 from pydantic import ValidationError
@@ -33,7 +34,7 @@ from itzi.ensemble.resolution import (
     validate_resolved_ensemble,
 )
 from itzi.ensemble.schema import TimeConfig
-from itzi.manifest import _manifest_document
+from itzi.manifest import _create_manifest, _manifest_document, _update_manifest
 
 
 def write_yaml(tmp_path, content: str):
@@ -116,6 +117,25 @@ def test_ensemble_description_reaches_manifest(tmp_path):
         "id": "study",
         "description": description,
     }
+
+
+def test_manifest_preserves_literal_unicode_on_create_and_update(tmp_path: Path) -> None:
+    description = "⛈️ → 🌊"
+    content = document().replace("  id: study", f"  id: study\n  description: {description}")
+    stream = load_yaml_stream(write_yaml(tmp_path, content))
+    assert stream.failures == ()
+    ensemble = stream.ensembles[0]
+    path = tmp_path / "manifest.yaml"
+
+    _create_manifest(path, ensemble, {}, overwrite=False)
+    created_text = path.read_text(encoding="utf-8")
+    assert description in created_text
+    assert yaml.safe_load(created_text)["ensemble"]["description"] == description
+
+    _update_manifest(path, ensemble, {})
+    updated_text = path.read_text(encoding="utf-8")
+    assert description in updated_text
+    assert yaml.safe_load(updated_text)["ensemble"]["description"] == description
 
 
 def test_drainage_coefficients_are_forwarded(tmp_path):
