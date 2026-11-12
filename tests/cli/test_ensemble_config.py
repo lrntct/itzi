@@ -11,7 +11,7 @@ from typing import cast
 
 import pytest
 import yaml
-from itzi_core import InfiltrationModelType, SurfaceFlowParameters, TemporalType
+from itzi_core import OUTPUT_ARRAY_KEYS, InfiltrationModelType, SurfaceFlowParameters, TemporalType
 from itzi_core.const import DefaultValues
 from pydantic import ValidationError
 
@@ -33,7 +33,7 @@ from itzi.ensemble.resolution import (
     _resolve_inputs,
     validate_resolved_ensemble,
 )
-from itzi.ensemble.schema import TimeConfig
+from itzi.ensemble.schema import InputSweepConfig, TimeConfig
 from itzi.manifest import _create_manifest, _manifest_document, _update_manifest
 
 
@@ -352,6 +352,78 @@ def test_loader_rejects_non_json_yaml_and_keeps_later_document(tmp_path):
 
     assert [failure.phase for failure in stream.failures] == ["parse"]
     assert [ensemble.ensemble_id for ensemble in stream.ensembles] == ["valid"]
+
+
+def test_schema_errors_are_formatted_on_separate_lines(tmp_path: Path) -> None:
+    content = document().replace("friction:", "frictiotn:")
+    path = write_yaml(tmp_path, content)
+
+    stream = load_yaml_stream(path)
+
+    assert stream.ensembles == ()
+    (failure,) = stream.failures
+    assert failure.detail.splitlines() == [
+        "input.friction: Field required",
+        "input.frictiotn: Extra inputs are not permitted.",
+        "Accepted input variables: " + ", ".join(sorted(InputSweepConfig.model_fields)),
+    ]
+    assert failure.format() == (
+        f"{path} document 0 line 1, column 1: schema:\n"
+        "  input.friction: Field required\n"
+        "  input.frictiotn: Extra inputs are not permitted.\n"
+        "  Accepted input variables: " + ", ".join(sorted(InputSweepConfig.model_fields))
+    )
+
+
+def test_unsupported_output_variables_show_accepted_choices(tmp_path: Path) -> None:
+    content = document().replace("variables: [water_depth]", "variables: [flow_velocity]")
+
+    stream = load_yaml_stream(write_yaml(tmp_path, content))
+
+    assert stream.ensembles == ()
+    detail = stream.failures[0].detail
+    assert "outputs.rasters.variables:" in detail
+    assert "contains unsupported output variables: flow_velocity" in detail
+    assert f"Accepted variables: {', '.join(sorted(OUTPUT_ARRAY_KEYS))}" in detail
+    assert stream.failures[0].format().splitlines() == [
+        f"{tmp_path / 'study.yaml'} document 0 line 1, column 1: schema:",
+        (
+            "  outputs.rasters.variables: Value error, "
+            "contains unsupported output variables: flow_velocity."
+        ),
+        "  Accepted variables: " + ", ".join(sorted(OUTPUT_ARRAY_KEYS)),
+    ]
+
+
+def test_unknown_input_variables_show_accepted_choices(tmp_path: Path) -> None:
+    content = document().replace("input:\n", "input:\n  rain: rainfall\n")
+
+    stream = load_yaml_stream(write_yaml(tmp_path, content))
+
+    assert stream.ensembles == ()
+    detail = stream.failures[0].detail
+    assert "input.rain: Extra inputs are not permitted" in detail
+    assert (
+        f"Accepted input variables: {', '.join(sorted(InputSweepConfig.model_fields))}" in detail
+    )
+
+
+@pytest.mark.parametrize(
+    "infiltration",
+    ["{type: unsupported}", "[{type: none}, {type: unsupported}]"],
+)
+def test_invalid_infiltration_type_shows_accepted_choices(
+    tmp_path: Path, infiltration: str
+) -> None:
+    content = document().replace("input:\n", f"input:\n  infiltration: {infiltration}\n")
+
+    stream = load_yaml_stream(write_yaml(tmp_path, content))
+
+    assert stream.ensembles == ()
+    detail = stream.failures[0].detail
+    assert "input.infiltration" in detail
+    assert "unsupported" in detail
+    assert "expected tags: 'none', 'constant', 'green-ampt'" in detail
 
 
 def test_infiltration_alternatives_are_explicit(tmp_path):

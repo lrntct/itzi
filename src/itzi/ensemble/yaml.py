@@ -314,8 +314,13 @@ def _format_validation_error(error: ValidationError) -> str:
     details = []
     for item in error.errors(include_url=False):
         location = ".".join(str(part) for part in item["loc"])
-        details.append(f"{location}: {item['msg']}" if location else item["msg"])
-    return "; ".join(details)
+        message = item["msg"]
+        if item["type"] == "extra_forbidden" and item["loc"][:-1] == ("input",):
+            message += (
+                f".\nAccepted input variables: {', '.join(sorted(InputSweepConfig.model_fields))}"
+            )
+        details.append(f"{location}: {message}" if location else message)
+    return "\n".join(details)
 
 
 def expand_yaml_document(

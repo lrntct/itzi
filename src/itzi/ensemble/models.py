@@ -80,7 +80,8 @@ class DocumentFailure:
         location = f"{self.path} document {self.document_index}"
         if self.line is not None and self.column is not None:
             location += f" line {self.line}, column {self.column}"
-        return f"{location}: {self.phase}: {self.detail}"
+        detail = self.detail.replace("\n", "\n  ")
+        return f"{location}: {self.phase}:\n  {detail}"
 
 
 class StrictModel(BaseModel):

@@ -142,7 +142,10 @@ class RasterOutputs(StrictModel):
     def validate_variables(cls, value: list[str]) -> list[str]:
         unknown = sorted(set(value) - set(OUTPUT_ARRAY_KEYS))
         if unknown:
-            raise ValueError(f"contains unsupported output variables: {', '.join(unknown)}")
+            raise ValueError(
+                f"contains unsupported output variables: {', '.join(unknown)}.\n"
+                f"Accepted variables: {', '.join(sorted(OUTPUT_ARRAY_KEYS))}"
+            )
         if len(value) != len(set(value)):
             raise ValueError("contains duplicate output variables")
         return value
