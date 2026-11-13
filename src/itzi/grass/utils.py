@@ -171,8 +171,11 @@ def resolve_input_identifier(identifier: str) -> tuple[str, Literal["raster", "s
     raster_mapset = gutils.get_mapset_raster(name, requested_mapset or "")
     raster_id = f"{name}@{raster_mapset}" if raster_mapset else None
     visible_mapsets = [requested_mapset] if requested_mapset else Mapset().visible.read()
+    temporal_mapsets = tgis.get_available_temporal_mapsets()
     strds_id = None
     for mapset in visible_mapsets:
+        if mapset not in temporal_mapsets:
+            continue
         candidate = f"{name}@{mapset}"
         try:
             is_strds = tgis.SpaceTimeRasterDataset(candidate).is_in_db()

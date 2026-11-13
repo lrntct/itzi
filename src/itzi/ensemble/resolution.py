@@ -64,6 +64,11 @@ def resolve_ensemble(
                     dict(expanded.input_maps) | dict(expanded.infiltration.input_maps),
                     cache=input_cache,
                 )
+                for key, expected in expanded.expected_input_kinds:
+                    if key in input_kinds and input_kinds[key] != expected:
+                        raise EnsembleError(
+                            f"{key}: {input_names[key]!r} is a {input_kinds[key]}, expected {expected}"
+                        )
                 swmm_path, swmm_digest = _resolve_swmm_input(expanded, swmm_cache)
                 results.append(
                     _build_resolved_simulation(

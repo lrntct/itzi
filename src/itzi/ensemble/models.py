@@ -144,6 +144,7 @@ class ExpandedSimulation:
     parameters: tuple[tuple[str, float], ...]
     drainage: tuple[tuple[str, str | float], ...] | None
     outputs: OutputTemplates
+    expected_input_kinds: tuple[tuple[str, Literal["raster", "strds"]], ...] = ()
 
 
 @dataclass(frozen=True)

@@ -42,6 +42,7 @@ from itzi.cli_parser import build_parser
 from itzi.configreader import ConfigReader
 from itzi.ensemble.models import (
     EnsembleError,
+    ExpandedEnsemble,
     ExpandedSimulation,
     ResolvedEnsemble,
     ResolvedSimulation,
@@ -99,8 +100,8 @@ def sim_runner_worker(conf_file: str, hotstart_file: str | None) -> None:
                 stats_file=conf_data.stats_file,
                 hotstart_config=conf_data.hotstart_config,
             )
-            sim_runner.initialize()
             try:
+                sim_runner.initialize()
                 sim_runner.run()
             except BaseException:
                 try:
@@ -134,8 +135,8 @@ def resolved_sim_runner_worker(simulation: ResolvedSimulation) -> tuple[str, str
                 else None,
                 input_kinds=dict(simulation.input_kinds),
             )
-            runner.initialize()
             try:
+                runner.initialize()
                 runner.run()
             except BaseException:
                 try:
@@ -356,7 +357,63 @@ def _run_ensemble_batch(cli_args: Namespace) -> None:
     for failure in document_failures:
         msgr.warning(failure.format())
 
-    selectors = getattr(cli_args, "member", [])
+    run_ensembles(
+        ensembles,
+        overwrite=bool(getattr(cli_args, "o", False)),
+        validate_only=bool(getattr(cli_args, "dry", False)),
+        selectors=tuple(getattr(cli_args, "member", [])),
+        initial_failures=len(document_failures),
+    )
+
+
+def run_ensembles(
+    ensembles: tuple[ExpandedEnsemble, ...],
+    *,
+    overwrite: bool = False,
+    validate_only: bool = False,
+    direct: bool = False,
+    selectors: tuple[str, ...] = (),
+    initial_failures: int = 0,
+) -> None:
+    """Validate and run expanded ensembles; direct mode attaches to the caller's session."""
+    previous = {name: os.environ.get(name) for name in ("GRASS_OVERWRITE", "ITZI_VERBOSE")}
+    logger = msgr._itzi_logger.logger
+    levels = [(handler, handler.level) for handler in logger.handlers]
+    level, raise_on_error = logger.level, msgr.raise_on_error
+    grass_error_modes = None
+    if direct:
+        import grass.script as gs
+        import grass.temporal as tgis
+
+        grass_error_modes = gs.get_raise_on_error(), tgis.get_raise_on_error()
+    try:
+        os.environ["GRASS_OVERWRITE"] = "1" if overwrite else "0"
+        _execute_ensembles(
+            ensembles, overwrite, validate_only, direct, selectors, initial_failures
+        )
+    finally:
+        for name, value in previous.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+        msgr.raise_on_error = raise_on_error
+        logger.setLevel(level)
+        for handler, handler_level in levels:
+            handler.setLevel(handler_level)
+        if grass_error_modes is not None:
+            gs.set_raise_on_error(grass_error_modes[0])
+            tgis.set_raise_on_error(grass_error_modes[1])
+
+
+def _execute_ensembles(
+    ensembles: tuple[ExpandedEnsemble, ...],
+    overwrite: bool,
+    dry: bool,
+    direct: bool,
+    selectors: tuple[str, ...],
+    initial_failures: int,
+) -> None:
     has_selectors = bool(selectors)
     if has_selectors and len(ensembles) != 1 and any("#" not in s for s in selectors):
         msgr.fatal("Unqualified --member IDs require a batch with exactly one ensemble")
@@ -369,13 +426,13 @@ def _run_ensemble_batch(cli_args: Namespace) -> None:
         if qualified.partition("#")[0] not in ensemble_ids:
             msgr.fatal(f"--member {selector!r} does not match a successfully resolved simulation")
 
-    dry = getattr(cli_args, "dry", False)
-    dry_failed = bool(document_failures)
-    failure_count = len(document_failures)
+    dry_failed = bool(initial_failures)
+    failure_count = initial_failures
     for ensemble in ensembles:
         successful: list[ResolvedSimulation] = []
         member_failures: list[ValidationFailure] = []
-        for result in _resolve_ensemble_in_subprocess(ensemble.simulations):
+        resolve = resolver_worker if direct else _resolve_ensemble_in_subprocess
+        for result in resolve(ensemble.simulations):
             if isinstance(result, ResolvedSimulation):
                 successful.append(result)
             else:
@@ -393,7 +450,8 @@ def _run_ensemble_batch(cli_args: Namespace) -> None:
             resolved,
             selected_ids,
             has_selectors=has_selectors,
-            overwrite=bool(getattr(cli_args, "o", False)),
+            overwrite=overwrite,
+            direct=direct,
         )
         if dry:
             _display_dry_plan(
@@ -416,7 +474,8 @@ def _run_ensemble_batch(cli_args: Namespace) -> None:
             run_validation_failures,
             manifest_failure,
             has_selectors=has_selectors,
-            overwrite=bool(cli_args.o),
+            overwrite=overwrite,
+            direct=direct,
         )
 
     if dry:
@@ -437,6 +496,7 @@ def _run_one_ensemble(
     *,
     has_selectors: bool,
     overwrite: bool,
+    direct: bool = False,
 ) -> int:
     """Run selected members and return the number of failures in this ensemble."""
     ensemble = resolved.ensemble
@@ -466,9 +526,10 @@ def _run_one_ensemble(
         if states[simulation.simulation_id]["status"] != "planned":
             continue
         if member_started:
-            detail = _validate_run_requirements_in_subprocess((simulation,)).get(
-                simulation.simulation_id
+            validate = (
+                run_validation_worker if direct else _validate_run_requirements_in_subprocess
             )
+            detail = validate((simulation,)).get(simulation.simulation_id)
             if detail is not None:
                 states[simulation.simulation_id]["status"] = "validation_failed"
                 states[simulation.simulation_id]["failure"] = {
@@ -486,7 +547,16 @@ def _run_one_ensemble(
             break
         started = time.monotonic()
         member_started = True
-        status, detail = _run_simulation_in_subprocess(simulation)
+        run = resolved_sim_runner_worker if direct else _run_simulation_in_subprocess
+        try:
+            status, detail = run(simulation)
+        except BaseException as error:
+            state = states[simulation.simulation_id]
+            state["status"] = "execution_failed"
+            state["elapsed_seconds"] = time.monotonic() - started
+            state["failure"] = {"phase": "execution", "detail": type(error).__name__}
+            _update_manifest(manifest_path, ensemble, states)
+            raise
         state = states[simulation.simulation_id]
         state["status"] = status
         state["elapsed_seconds"] = time.monotonic() - started
@@ -553,6 +623,7 @@ def _validate_ensemble_run_requirements(
     *,
     has_selectors: bool,
     overwrite: bool,
+    direct: bool = False,
 ) -> tuple[dict[str, dict[str, str]], str | None]:
     """Collect one ensemble's selected-member and manifest failures."""
     if not selected_ids and has_selectors:
@@ -579,7 +650,8 @@ def _validate_ensemble_run_requirements(
         if simulation.simulation_id in selected_ids and simulation.simulation_id not in failures
     )
     if to_validate:
-        for simulation_id, detail in _validate_run_requirements_in_subprocess(to_validate).items():
+        validate = run_validation_worker if direct else _validate_run_requirements_in_subprocess
+        for simulation_id, detail in validate(to_validate).items():
             failures[simulation_id] = {"phase": "run_validation", "detail": detail}
     return failures, manifest_failure
 
