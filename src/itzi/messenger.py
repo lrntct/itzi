@@ -133,13 +133,29 @@ verbose: Callable[[str], None] = _itzi_logger.verbose
 debug: Callable[[str], None] = _itzi_logger.debug
 
 
-def percent(start_time, end_time, sim_time, sim_start_time):
+def percent(
+    start_time: datetime, end_time: datetime, sim_time: datetime, sim_start_time: datetime
+) -> None:
     """Display progress of the simulation"""
+    if verbosity() == VerbosityLevel.SUPER_QUIET:
+        return
+
     sim_time_s = (sim_time - start_time).total_seconds()
     duration_s = (end_time - start_time).total_seconds()
     advance_perc = sim_time_s / duration_s
 
-    if verbosity() == VerbosityLevel.QUIET:
+    if os.environ.get("GRASS_MESSAGE_FORMAT") == "gui":
+        from grass.lib.gis import G_percent, G_set_verbose, G_verbose
+
+        # The CLI suppresses GRASS messages independently of Itzi progress.
+        grass_verbosity = G_verbose()
+        G_set_verbose(max(1, grass_verbosity))
+        try:
+            G_percent(int(advance_perc * 100), 100, 1)
+        finally:
+            G_set_verbose(grass_verbosity)
+
+    elif verbosity() == VerbosityLevel.QUIET:
         print(f"{advance_perc:.2%}", file=sys.stderr, end="\r")
 
     elif verbosity() >= VerbosityLevel.MESSAGE:

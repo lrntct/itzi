@@ -165,6 +165,12 @@ class SimulationRunner:
                 )
                 last_progress_update = now
             self.step()
+        msgr.percent(
+            self.sim.start_time,
+            self.sim.end_time,
+            self.sim.sim_time,
+            sim_start_time,
+        )
         return self
 
     def finalize(self) -> Self:
